@@ -1,6 +1,6 @@
 # Distributed Wagering Processor — Jungle Gaming
 
-Solução sênior para o desafio técnico da Jungle Gaming: processador de apostas distribuído, transacional e resiliente a falhas e concorrência massiva.
+Solução para o desafio técnico da Jungle Gaming: processador de apostas distribuído, transacional e resiliente a falhas e concorrência massiva.
 
 ---
 
