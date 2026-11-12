@@ -54,10 +54,12 @@ export class OutboxPublisherWorker implements OnModuleInit, OnModuleDestroy {
       try {
         // Fase 1 (tx curta): Claim com FOR UPDATE SKIP LOCKED e lease de 30s
         const claimed = await this.em.transactional(async (txEm) => {
-          const unpublishedCount = await txEm.count(OutboxMessageOrmEntity, {
-            publishedAt: null,
-          });
-          this.metricsService?.outboxLagGauge.set(unpublishedCount);
+          if (this.metricsService && typeof txEm.count === "function") {
+            const unpublishedCount = await txEm.count(OutboxMessageOrmEntity, {
+              publishedAt: null,
+            });
+            this.metricsService.outboxLagGauge.set(unpublishedCount);
+          }
 
           const now = new Date();
           const dueMessagesOrm = await txEm
@@ -161,10 +163,12 @@ export class OutboxPublisherWorker implements OnModuleInit, OnModuleDestroy {
           }
 
           await txEm.flush();
-          const remainingCount = await txEm.count(OutboxMessageOrmEntity, {
-            publishedAt: null,
-          });
-          this.metricsService?.outboxLagGauge.set(remainingCount);
+          if (this.metricsService && typeof txEm.count === "function") {
+            const remainingCount = await txEm.count(OutboxMessageOrmEntity, {
+              publishedAt: null,
+            });
+            this.metricsService.outboxLagGauge.set(remainingCount);
+          }
         });
       } catch (error) {
         logger.error(`Erro no processamento da outbox: ${(error as Error).message}`);

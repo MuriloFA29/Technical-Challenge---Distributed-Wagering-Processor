@@ -3,11 +3,14 @@ import { MikroORM } from "@mikro-orm/core";
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module";
 import { logger } from "./infrastructure/observability/app-logger";
+import { configureApp } from "./presentation/app-setup";
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
     logger: ["error", "warn", "log"],
   });
+
+  configureApp(app);
 
   // Habilitar Graceful Shutdown (SIGINT, SIGTERM)
   app.enableShutdownHooks();

@@ -1,7 +1,10 @@
 import { ListQueuesCommand, SQSClient } from "@aws-sdk/client-sqs";
 import { EntityManager } from "@mikro-orm/postgresql";
 import { Controller, Get, HttpException, HttpStatus } from "@nestjs/common";
+import { ApiOperation, ApiResponse, ApiTags } from "@nestjs/swagger";
+import { HealthLiveResponseDto, HealthReadyResponseDto } from "../dto/responses.dto";
 
+@ApiTags("Health")
 @Controller("health")
 export class HealthController {
   constructor(
@@ -10,6 +13,8 @@ export class HealthController {
   ) {}
 
   @Get("live")
+  @ApiOperation({ summary: "Liveness probe" })
+  @ApiResponse({ status: 200, description: "Service is live", type: HealthLiveResponseDto })
   live() {
     return {
       status: "UP",
@@ -18,6 +23,17 @@ export class HealthController {
   }
 
   @Get("ready")
+  @ApiOperation({ summary: "Readiness probe (checks PostgreSQL and SQS connectivity)" })
+  @ApiResponse({
+    status: 200,
+    description: "Service and dependencies are ready",
+    type: HealthReadyResponseDto,
+  })
+  @ApiResponse({
+    status: 503,
+    description: "One or more dependencies are unavailable",
+    type: HealthReadyResponseDto,
+  })
   async ready() {
     let dbStatus = "UP";
     let sqsStatus = "UP";

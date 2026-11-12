@@ -1,7 +1,7 @@
 import "reflect-metadata";
 import { ListQueuesCommand, SQSClient } from "@aws-sdk/client-sqs";
 import { EntityManager } from "@mikro-orm/postgresql";
-import { INestApplication, Module } from "@nestjs/common";
+import { INestApplication, MiddlewareConsumer, Module, NestModule } from "@nestjs/common";
 import { APP_FILTER, APP_GUARD, NestFactory } from "@nestjs/core";
 import { GetTransactionUseCase } from "../../../src/application/use-cases/get-transaction.use-case";
 import { GetWalletUseCase } from "../../../src/application/use-cases/get-wallet.use-case";
@@ -10,12 +10,14 @@ import { OpenWalletUseCase } from "../../../src/application/use-cases/open-walle
 import { ProcessWagerTransactionUseCase } from "../../../src/application/use-cases/process-wager-transaction.use-case";
 import { ReconcileWalletUseCase } from "../../../src/application/use-cases/reconcile-wallet.use-case";
 import { MetricsService } from "../../../src/infrastructure/observability/metrics.service";
+import { configureApp } from "../../../src/presentation/app-setup";
 import { HealthController } from "../../../src/presentation/controllers/health.controller";
 import { MetricsController } from "../../../src/presentation/controllers/metrics.controller";
 import { WageringController } from "../../../src/presentation/controllers/wagering.controller";
 import { WalletsController } from "../../../src/presentation/controllers/wallets.controller";
 import { GlobalHttpExceptionFilter } from "../../../src/presentation/filters/http-exception.filter";
 import { AuthGuard } from "../../../src/presentation/guards/auth.guard";
+import { CorrelationIdMiddleware } from "../../../src/presentation/middleware/correlation-id.middleware";
 import { E2eEntityManager } from "./e2e-entity-manager";
 
 export class MockSqsClient {
@@ -96,9 +98,9 @@ export async function createE2eApp(): Promise<E2eTestHarness> {
       },
       {
         provide: ProcessWagerTransactionUseCase,
-        useFactory: (entityManager: EntityManager) =>
-          new ProcessWagerTransactionUseCase(entityManager),
-        inject: [EntityManager],
+        useFactory: (entityManager: EntityManager, metricsService: MetricsService) =>
+          new ProcessWagerTransactionUseCase(entityManager, metricsService),
+        inject: [EntityManager, MetricsService],
       },
       {
         provide: GetTransactionUseCase,
@@ -115,9 +117,14 @@ export async function createE2eApp(): Promise<E2eTestHarness> {
       },
     ],
   })
-  class E2eAppModule {}
+  class E2eAppModule implements NestModule {
+    configure(consumer: MiddlewareConsumer): void {
+      consumer.apply(CorrelationIdMiddleware).forRoutes("*");
+    }
+  }
 
   const app = await NestFactory.create(E2eAppModule, { logger: false });
+  configureApp(app);
   await app.listen(0, "127.0.0.1");
 
   const address = app.getHttpServer().address();

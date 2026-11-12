@@ -1,5 +1,5 @@
 import { EntityManager, LockMode } from "@mikro-orm/postgresql";
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
+import { Injectable, OnModuleDestroy, OnModuleInit, Optional } from "@nestjs/common";
 import { v7 as uuidv7 } from "uuid";
 import { OutboxMessage } from "../../domain/entities/outbox-message";
 import {
@@ -22,16 +22,20 @@ import {
   WalletLedgerEntryOrmEntity,
   WalletOrmEntity,
 } from "../database/entities";
+import { logFinancialEvent, logger } from "../observability/app-logger";
+import { MetricsService } from "../observability/metrics.service";
 
 @Injectable()
 export class PendingReferenceWorker implements OnModuleInit, OnModuleDestroy {
-  private readonly logger = new Logger(PendingReferenceWorker.name);
   private isRunning = false;
   private isShuttingDown = false;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private inFlightPromise: Promise<void> | null = null;
 
-  constructor(private readonly em: EntityManager) {}
+  constructor(
+    private readonly em: EntityManager,
+    @Optional() private readonly metricsService?: MetricsService
+  ) {}
 
   onModuleInit(): void {
     const raw = process.env.PENDING_REFERENCE_POLL_INTERVAL_MS;
@@ -81,6 +85,9 @@ export class PendingReferenceWorker implements OnModuleInit, OnModuleDestroy {
 
         // Fase 2: Processar cada candidato in-place sob lock da wallet
         for (const candidate of candidates) {
+          this.metricsService?.messageRetriesTotal.inc({
+            worker_name: "PendingReferenceWorker",
+          });
           try {
             await this.em.transactional(async (txEm) => {
               if (typeof txEm.getConnection === "function") {
@@ -119,9 +126,14 @@ export class PendingReferenceWorker implements OnModuleInit, OnModuleDestroy {
                 (referenceOrm.status === WagerTransactionStatus.Rejected ||
                   referenceOrm.status === WagerTransactionStatus.Failed)
               ) {
-                this.rejectInPlace(txEm, txOrm, walletOrm, FailureCode.ReferenceNotFound, now);
-                await txEm.flush();
-                this.logger.warn(
+                await this.rejectInPlace(
+                  txEm,
+                  txOrm,
+                  walletOrm,
+                  FailureCode.ReferenceNotFound,
+                  now
+                );
+                logger.warn(
                   `Transação ${txOrm.id} rejeitada in-place: referência ${referenceOrm.id} está em estado ${referenceOrm.status}.`
                 );
                 return;
@@ -131,9 +143,14 @@ export class PendingReferenceWorker implements OnModuleInit, OnModuleDestroy {
               if (!referenceOrm || referenceOrm.status !== WagerTransactionStatus.Processed) {
                 const ageMs = now.getTime() - txOrm.createdAt.getTime();
                 if (ageMs > maxAgeMs) {
-                  this.rejectInPlace(txEm, txOrm, walletOrm, FailureCode.ReferenceNotFound, now);
-                  await txEm.flush();
-                  this.logger.warn(
+                  await this.rejectInPlace(
+                    txEm,
+                    txOrm,
+                    walletOrm,
+                    FailureCode.ReferenceNotFound,
+                    now
+                  );
+                  logger.warn(
                     `Transação ${txOrm.id} expirou o TTL aguardando referência e foi rejeitada in-place.`
                   );
                 }
@@ -149,23 +166,38 @@ export class PendingReferenceWorker implements OnModuleInit, OnModuleDestroy {
                 referenceOrm.currency !== txOrm.currency ||
                 referenceOrm.roundId !== txOrm.roundId
               ) {
-                this.rejectInPlace(txEm, txOrm, walletOrm, FailureCode.ReferenceMismatch, now);
-                await txEm.flush();
+                await this.rejectInPlace(
+                  txEm,
+                  txOrm,
+                  walletOrm,
+                  FailureCode.ReferenceMismatch,
+                  now
+                );
                 return;
               }
 
               // 2. Validação de valor idêntico
               if (referenceOrm.amount !== txOrm.amount) {
-                this.rejectInPlace(txEm, txOrm, walletOrm, FailureCode.ReferenceMismatch, now);
-                await txEm.flush();
+                await this.rejectInPlace(
+                  txEm,
+                  txOrm,
+                  walletOrm,
+                  FailureCode.ReferenceMismatch,
+                  now
+                );
                 return;
               }
 
               // 3. Matriz de tipos permitidos na referência
               if (txOrm.kind === WagerTransactionKind.Refund) {
                 if (referenceOrm.kind !== WagerTransactionKind.Bet) {
-                  this.rejectInPlace(txEm, txOrm, walletOrm, FailureCode.InvalidReferenceType, now);
-                  await txEm.flush();
+                  await this.rejectInPlace(
+                    txEm,
+                    txOrm,
+                    walletOrm,
+                    FailureCode.InvalidReferenceType,
+                    now
+                  );
                   return;
                 }
               } else if (txOrm.kind === WagerTransactionKind.Rollback) {
@@ -175,8 +207,13 @@ export class PendingReferenceWorker implements OnModuleInit, OnModuleDestroy {
                   WagerTransactionKind.Refund,
                 ];
                 if (!allowedForRollback.includes(referenceOrm.kind)) {
-                  this.rejectInPlace(txEm, txOrm, walletOrm, FailureCode.InvalidReferenceType, now);
-                  await txEm.flush();
+                  await this.rejectInPlace(
+                    txEm,
+                    txOrm,
+                    walletOrm,
+                    FailureCode.InvalidReferenceType,
+                    now
+                  );
                   return;
                 }
               }
@@ -188,8 +225,13 @@ export class PendingReferenceWorker implements OnModuleInit, OnModuleDestroy {
                 status: WagerTransactionStatus.Processed,
               });
               if (existingReversal) {
-                this.rejectInPlace(txEm, txOrm, walletOrm, FailureCode.DuplicateReversal, now);
-                await txEm.flush();
+                await this.rejectInPlace(
+                  txEm,
+                  txOrm,
+                  walletOrm,
+                  FailureCode.DuplicateReversal,
+                  now
+                );
                 return;
               }
 
@@ -223,14 +265,13 @@ export class PendingReferenceWorker implements OnModuleInit, OnModuleDestroy {
 
                 if (isRefCredit) {
                   if (wallet.balance.isLessThan(inputMoney)) {
-                    this.rejectInPlace(
+                    await this.rejectInPlace(
                       txEm,
                       txOrm,
                       walletOrm,
                       FailureCode.ReversalInsufficientFunds,
                       now
                     );
-                    await txEm.flush();
                     return;
                   }
                   direction = LedgerDirection.Debit;
@@ -323,18 +364,32 @@ export class PendingReferenceWorker implements OnModuleInit, OnModuleDestroy {
               this.enqueueOutbox(txEm, txProcessedEvent);
 
               await txEm.flush();
-              this.logger.log(
-                `Transação fora de ordem ${txOrm.id} resolvida in-place com sucesso.`
-              );
+              this.metricsService?.transactionsTotal.inc({
+                kind: txOrm.kind,
+                status: WagerTransactionStatus.Processed,
+                provider_id: txOrm.providerId,
+              });
+              logFinancialEvent({
+                event: "PendingReferenceResolved",
+                correlationId: txOrm.idempotencyKey,
+                transactionId: txOrm.id,
+                walletId: txOrm.walletId,
+                providerId: txOrm.providerId,
+                status: WagerTransactionStatus.Processed,
+              });
+              logger.info(`Transação fora de ordem ${txOrm.id} resolvida in-place com sucesso.`);
             });
           } catch (candidateErr) {
-            this.logger.error(
+            if (this.isLockOrConcurrencyError(candidateErr)) {
+              this.metricsService?.lockConflictsTotal.inc();
+            }
+            logger.error(
               `Erro ao processar transação pendente ${candidate.id}: ${(candidateErr as Error).message}`
             );
           }
         }
       } catch (err) {
-        this.logger.error(`Erro ao reprocessar referências pendentes: ${(err as Error).message}`);
+        logger.error(`Erro ao reprocessar referências pendentes: ${(err as Error).message}`);
       } finally {
         this.isRunning = false;
         this.inFlightPromise = null;
@@ -345,13 +400,13 @@ export class PendingReferenceWorker implements OnModuleInit, OnModuleDestroy {
     await run;
   }
 
-  private rejectInPlace(
+  private async rejectInPlace(
     txEm: EntityManager,
     txOrm: WagerTransactionOrmEntity,
     walletOrm: WalletOrmEntity,
     failureCode: FailureCode,
     now: Date
-  ): void {
+  ): Promise<void> {
     txOrm.status = WagerTransactionStatus.Rejected;
     txOrm.failureCode = failureCode;
     txOrm.observedBalance = walletOrm.balance;
@@ -377,6 +432,37 @@ export class PendingReferenceWorker implements OnModuleInit, OnModuleDestroy {
       },
     });
     this.enqueueOutbox(txEm, rejectedEvent);
+    await txEm.flush();
+
+    this.metricsService?.transactionsTotal.inc({
+      kind: txOrm.kind,
+      status: WagerTransactionStatus.Rejected,
+      provider_id: txOrm.providerId,
+    });
+    logFinancialEvent({
+      event: "PendingReferenceRejected",
+      correlationId: txOrm.idempotencyKey,
+      transactionId: txOrm.id,
+      walletId: txOrm.walletId,
+      providerId: txOrm.providerId,
+      status: WagerTransactionStatus.Rejected,
+      failureCode,
+    });
+  }
+
+  private isLockOrConcurrencyError(error: unknown): boolean {
+    if (typeof error !== "object" || error === null) return false;
+    const errObj = error as { code?: unknown; message?: unknown; cause?: { code?: unknown } };
+    const code = errObj.code ?? errObj.cause?.code;
+    if (code === "55P03" || code === "40P01" || code === "40001") {
+      return true;
+    }
+    const msg = typeof errObj.message === "string" ? errObj.message.toLowerCase() : "";
+    return (
+      msg.includes("lock_timeout") ||
+      msg.includes("could not obtain lock") ||
+      msg.includes("deadlock detected")
+    );
   }
 
   private enqueueOutbox(txEm: EntityManager, event: IntegrationEvent<unknown>): void {

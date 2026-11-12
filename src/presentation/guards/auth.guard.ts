@@ -15,9 +15,15 @@ export class AuthGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
     const request = context.switchToHttp().getRequest();
 
-    // Endpoints de health e métricas são abertos
+    // Endpoints de health, métricas e documentação OpenAPI são abertos
     const path = request.url || "";
-    if (path.startsWith("/health") || path.startsWith("/metrics")) {
+    if (
+      path.startsWith("/health") ||
+      path.startsWith("/metrics") ||
+      path === "/docs" ||
+      path.startsWith("/docs/") ||
+      path.startsWith("/docs-json")
+    ) {
       return true;
     }
 

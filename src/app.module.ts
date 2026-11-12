@@ -1,7 +1,7 @@
 import { SQSClient } from "@aws-sdk/client-sqs";
 import { MikroOrmModule } from "@mikro-orm/nestjs";
 import { EntityManager } from "@mikro-orm/postgresql";
-import { Module } from "@nestjs/common";
+import { MiddlewareConsumer, Module, NestModule } from "@nestjs/common";
 import { APP_FILTER, APP_GUARD } from "@nestjs/core";
 import { ScheduleModule } from "@nestjs/schedule";
 import { GetTransactionUseCase } from "./application/use-cases/get-transaction.use-case";
@@ -22,6 +22,7 @@ import { WageringController } from "./presentation/controllers/wagering.controll
 import { WalletsController } from "./presentation/controllers/wallets.controller";
 import { GlobalHttpExceptionFilter } from "./presentation/filters/http-exception.filter";
 import { AuthGuard } from "./presentation/guards/auth.guard";
+import { CorrelationIdMiddleware } from "./presentation/middleware/correlation-id.middleware";
 
 @Module({
   imports: [MikroOrmModule.forRoot(mikroOrmConfig), ScheduleModule.forRoot()],
@@ -57,8 +58,9 @@ import { AuthGuard } from "./presentation/guards/auth.guard";
     },
     {
       provide: ProcessWagerTransactionUseCase,
-      useFactory: (em: EntityManager) => new ProcessWagerTransactionUseCase(em),
-      inject: [EntityManager],
+      useFactory: (em: EntityManager, metricsService: MetricsService) =>
+        new ProcessWagerTransactionUseCase(em, metricsService),
+      inject: [EntityManager, MetricsService],
     },
     {
       provide: GetTransactionUseCase,
@@ -80,4 +82,8 @@ import { AuthGuard } from "./presentation/guards/auth.guard";
     },
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer): void {
+    consumer.apply(CorrelationIdMiddleware).forRoutes("*");
+  }
+}
