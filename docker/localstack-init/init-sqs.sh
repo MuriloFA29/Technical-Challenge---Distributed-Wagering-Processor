@@ -15,4 +15,9 @@ awslocal sqs create-queue \
   --queue-name wager-transactions.fifo \
   --attributes FifoQueue=true,ContentBasedDeduplication=true,RedrivePolicy="{\"deadLetterTargetArn\":\"$DLQ_ARN\",\"maxReceiveCount\":\"5\"}"
 
+# Criar fila de eventos de saída FIFO para o OutboxPublisherWorker
+awslocal sqs create-queue \
+  --queue-name wager-events.fifo \
+  --attributes FifoQueue=true,ContentBasedDeduplication=true
+
 echo "Filas FIFO criadas com sucesso!"
