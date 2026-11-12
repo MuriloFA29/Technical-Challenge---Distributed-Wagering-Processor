@@ -100,7 +100,7 @@ A documentação interativa está disponível em **`GET /docs`** (Swagger UI) e 
 ### Headers e Formato de Erro
 - **`x-provider-id`** *(opcional, padrão `"provider-a"`)*: Identidade do provedor validada pelo `AuthGuard` contra `body.providerId` ou `:providerId`.
 - **`Idempotency-Key`** *(opcional em `POST /wagering/transactions`)*: Padrão `${providerId}:${externalTransactionId}`.
-- **`X-Correlation-Id`** *(opcional)*: Propagado nas respostas HTTP, logs Pino e envelopes `IntegrationEvent`.
+- **`X-Correlation-Id`** *(opcional)*: Propagado nas respostas HTTP e nos logs HTTP/Pino (`CorrelationIdMiddleware`). Os envelopes `IntegrationEvent` de saída usam `wagerTx.idempotencyKey` (ou `OPENING-${wallet.id}` no `OpenWalletUseCase`) como `correlationId`.
 - **Formato Padrão de Erro**:
   ```json
   {
@@ -183,13 +183,21 @@ Tipos de eventos publicados em `wager-events.fifo`: `WalletBalanceChanged`, `Wag
   "eventId": "019320a1-7c2b-7000-8000-000000000001",
   "eventType": "WagerTransactionProcessed",
   "aggregateId": "0192f291-27dd-7d3f-8071-5f8685deef37",
-  "correlationId": "corr-123e4567",
+  "correlationId": "provider-a:tx-100",
   "causationId": "019320a1-7c2b-7000-8000-000000000000",
   "occurredAt": "2026-11-12T21:00:00.000Z",
   "version": 1,
   "data": {
     "transactionId": "019320a1-7c2b-7000-8000-000000000000",
-    "status": "PROCESSED"
+    "providerId": "provider-a",
+    "externalTransactionId": "tx-100",
+    "walletId": "0192f291-27dd-7d3f-8071-5f8685deef37",
+    "playerId": "0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1",
+    "roundId": "round-987",
+    "gameId": "fortune-tiger",
+    "kind": "BET",
+    "money": { "amount": "25.00", "currency": "BRL" },
+    "balanceAfter": { "amount": "975.00", "currency": "BRL" }
   }
 }
 ```

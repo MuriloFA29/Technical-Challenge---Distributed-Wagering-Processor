@@ -22,7 +22,7 @@ flowchart TB
     Swagger["OpenAPI / Swagger UI (/docs)"]
     MetricsEP["Prometheus Endpoint (/metrics)"]
     HealthEP["Health Probes (/health/live, /health/ready)"]
-    SQSConsumer["SqsWagerConsumer (Inbox + Ack Post-Commit)"]
+    SQSConsumer["SqsConsumerService (consumerName: WagerSqsConsumer)"]
   end
 
   subgraph Core["Application & Domain Core"]
@@ -95,16 +95,16 @@ sequenceDiagram
   participant Outbox as "OutboxPublisherWorker"
   participant SQS as "SQS FIFO (wager-events.fifo)"
 
-  Caller->>App: "Submit wager (Idempotency-Key + X-Correlation-Id)"
+  Caller->>App: "Submit wager (Idempotency-Key + x-provider-id)"
   App->>PG: "BEGIN; SET LOCAL lock_timeout = '5000ms'"
-  App->>PG: "Check idempotency_key + canonical SHA-256 payloadHash"
+  App->>PG: "SELECT ... FROM wallets WHERE id = $1 FOR UPDATE (PESSIMISTIC_WRITE)"
+  App->>PG: "Check inbox (if SQS) & idempotency_key + canonical SHA-256 payloadHash"
   alt "Identical Replay"
     PG-->>App: "Existing transaction + persisted observed_balance"
     App-->>Caller: "200 OK (idempotentReplay: true)"
   else "Conflicting Payload"
     App-->>Caller: "409 IDEMPOTENCY_CONFLICT"
   else "New Transaction"
-    App->>PG: "SELECT ... FROM wallets WHERE id = $1 FOR UPDATE"
     App->>PG: "INSERT wager_transactions + INSERT wallet_ledger_entries"
     App->>PG: "UPDATE wallets.balance + INSERT outbox_messages"
     App->>PG: "COMMIT"
@@ -124,7 +124,7 @@ sequenceDiagram
   2. **Publish**: Sends the `IntegrationEvent` envelope to `wager-events.fifo` **outside** the database transaction, avoiding holding DB connections open during network I/O.
   3. **Acknowledge / Backoff**: Marks `published_at` on success, or increments `attempts` with exponential backoff and increments `wagering_message_retries_total` on failure.
 - **Inbox Pattern (`inbox_messages`)**:
-  - `SqsWagerConsumer` records `(consumer_name, message_id)` in `inbox_messages` inside the same database transaction and executes `DeleteMessageCommand` only **after** the transaction commits. Poison messages exceeding `maxReceiveCount = 5` are routed by SQS to `wager-transactions-dlq.fifo`.
+  - `SqsConsumerService` (`consumerName = "WagerSqsConsumer"`) records `(consumer_name, message_id)` in `inbox_messages` inside the same database transaction and executes `DeleteMessageCommand` only **after** the transaction commits. Poison messages exceeding `maxReceiveCount = 5` are routed by SQS to `wager-transactions-dlq.fifo`.
 
 ---
 
@@ -136,11 +136,9 @@ Providers may deliver a `REFUND` or `ROLLBACK` before the referenced `BET` arriv
 stateDiagram-v2
   [*] --> PENDING_REFERENCE: "REFUND/ROLLBACK arrives before referenced BET"
   PENDING_REFERENCE --> PROCESSED: "Referenced BET is PROCESSED -> apply reversal & ledger entry"
-  PENDING_REFERENCE --> REJECTED: "Referenced BET is REJECTED/FAILED (fast-reject) or business rule fails"
-  PENDING_REFERENCE --> FAILED: "5-minute TTL expired without referenced BET"
+  PENDING_REFERENCE --> REJECTED: "Referenced BET is REJECTED/FAILED, rule fails, or 5m TTL expires (ReferenceNotFound)"
   PROCESSED --> [*]
   REJECTED --> [*]
-  FAILED --> [*]
 ```
 
 `PendingReferenceWorker` polls `wager_transactions` with `status = 'PENDING_REFERENCE'` using `FOR UPDATE SKIP LOCKED` (`LockMode.PESSIMISTIC_PARTIAL_WRITE`) and resolves each entry **in-place within a single transaction**:
@@ -149,7 +147,7 @@ stateDiagram-v2
    - If not yet present and within the 5-minute TTL, schedules the next attempt.
    - If the referenced transaction is `REJECTED` or `FAILED`, fast-rejects the pending reversal as `REJECTED`.
    - If the referenced transaction is `PROCESSED`, applies the balance reversal, writes the immutable ledger entry, and enqueues the `IntegrationEvent` to `outbox_messages`.
-   - If the 5-minute TTL has elapsed, transitions the transaction to `FAILED`.
+   - If the 5-minute TTL has elapsed, calls `rejectInPlace(...)` to transition the transaction to `REJECTED` (`FailureCode.ReferenceNotFound`).
 
 ---
 
@@ -202,7 +200,7 @@ Financial integrity is enforced at the schema level (`src/infrastructure/databas
 
 ### `Money` Value Object
 - Backed by `decimal.js` configured with **precision 28** and **`ROUND_HALF_UP`**.
-- Enforces a maximum of **2 decimal places** and rejects `NaN`, `Infinity`, empty strings, and negative inputs at the domain boundary.
+- Enforces a maximum of **2 decimal places** and rejects `NaN`, `Infinity`, empty strings, and scientific notation at construction. `Money.from()` accepts signed numeric strings (to support signed delta/arithmetic representation), while `Wallet` (`open`, `debit`, `credit`) rejects negative amounts with `InsufficientFundsError`.
 - Cross-currency arithmetic throws `CurrencyMismatchError`.
 
 ### Canonical SHA-256 `payloadHash` & Faithful Replay
@@ -215,9 +213,10 @@ Financial integrity is enforced at the schema level (`src/infrastructure/databas
 
 ## 7. Authentication & Provider Identity Extension
 
-The HTTP layer enforces provider identity through `AuthGuard` and the `ProviderIdentityPort` abstraction:
-- In the local/demo configuration, `AuthGuard` reads the `x-provider-id` header (defaulting to `"provider-a"`) and validates it against `body.providerId` or `:providerId` (returning `403 Forbidden` on mismatch).
-- In production, `ProviderIdentityPort` is designed to be backed by an external OIDC Identity Provider (e.g., **Keycloak** or **Zitadel**) using OAuth2 Client Credentials (`client_id` + `client_secret`), validating JWT signatures against cached JWKS (`/.well-known/jwks.json`) and extracting `providerId` from signed token claims.
+The HTTP layer enforces provider identity through `AuthGuard` (`src/presentation/guards/auth.guard.ts`) and controller-level checks:
+- In the local/demo configuration, `AuthGuard` skips `/health`, `/metrics`, and `/docs*` routes, reads the `x-provider-id` header (defaulting to `"provider-a"`), and attaches `request.providerIdentity = { providerId, authenticated: true }`.
+- `WageringController` enforces that `request.providerIdentity.providerId` matches `body.providerId` or `:providerId` (returning `403 Forbidden` on mismatch).
+- In production, `AuthGuard` is designed to be backed by an external OIDC Identity Provider (e.g., **Keycloak** or **Zitadel**) using OAuth2 Client Credentials (`client_id` + `client_secret`), validating JWT signatures against cached JWKS (`/.well-known/jwks.json`) and populating `request.providerIdentity` from signed token claims.
 
 ---
 

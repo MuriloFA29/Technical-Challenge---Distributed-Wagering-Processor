@@ -19,7 +19,7 @@ Additionally, multiple application instances may poll `outbox_messages` and `PEN
 ## Decision
 
 1. **Inbox Pattern (`inbox_messages`)**:
-   - `SqsWagerConsumer` inserts `(consumer_name, message_id)` into `inbox_messages` within the same database transaction as the wager operation.
+   - `SqsConsumerService` (`consumerName = "WagerSqsConsumer"`) inserts `(consumer_name, message_id)` into `inbox_messages` within the same database transaction as the wager operation.
    - SQS `DeleteMessageCommand` is executed **only after** the PostgreSQL transaction commits.
    - Poison messages exceeding `maxReceiveCount = 5` are routed by SQS `RedrivePolicy` to `wager-transactions-dlq.fifo`.
 2. **Transactional Outbox (`outbox_messages`) + 3-Phase `OutboxPublisherWorker`**:
@@ -29,7 +29,7 @@ Additionally, multiple application instances may poll `outbox_messages` and `PEN
      2. **Publish**: Sends messages to `wager-events.fifo` (`MessageGroupId = aggregateId`, `MessageDeduplicationId = outboxMessage.id`) **outside** any DB transaction.
      3. **Acknowledge / Retry**: Marks `published_at` on success or applies backoff and increments `wagering_message_retries_total` on failure.
 3. **Out-of-Order Recovery (`PendingReferenceWorker`)**:
-   - Polls `PENDING_REFERENCE` transactions using `FOR UPDATE SKIP LOCKED`, locks the wallet first, fast-rejects if the referenced transaction is `REJECTED`/`FAILED`, applies the reversal in-place if `PROCESSED`, or marks `FAILED` after a 5-minute TTL.
+   - Polls `PENDING_REFERENCE` transactions using `FOR UPDATE SKIP LOCKED`, locks the wallet first, fast-rejects if the referenced transaction is `REJECTED`/`FAILED`, applies the reversal in-place if `PROCESSED`, or calls `rejectInPlace(...)` to transition to `REJECTED` (`FailureCode.ReferenceNotFound`) after a 5-minute TTL.
 
 ## Consequences
 
@@ -45,6 +45,6 @@ Additionally, multiple application instances may poll `outbox_messages` and `PEN
 
 - [`OutboxPublisherWorker`](../../src/infrastructure/workers/outbox-publisher.worker.ts)
 - [`PendingReferenceWorker`](../../src/infrastructure/workers/pending-reference.worker.ts)
-- [`SqsWagerConsumer`](../../src/infrastructure/messaging/sqs-consumer.service.ts)
+- [`SqsConsumerService`](../../src/infrastructure/messaging/sqs-consumer.service.ts)
 - [`IntegrationEvent`](../../src/domain/events/integration-event.ts)
 - [`init-sqs.sh`](../../docker/localstack-init/init-sqs.sh)
