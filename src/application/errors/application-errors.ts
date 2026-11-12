@@ -31,3 +31,9 @@ export class IdempotencyConflictError extends ApplicationError {
     );
   }
 }
+
+export class InvalidTransactionKindError extends ApplicationError {
+  constructor(kind: string) {
+    super(`${kind} transaction kind is internal and cannot be submitted via API or messaging.`);
+  }
+}

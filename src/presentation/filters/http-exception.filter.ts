@@ -2,6 +2,7 @@ import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus } from
 import { Response } from "express";
 import {
   IdempotencyConflictError,
+  InvalidTransactionKindError,
   TransactionNotFoundError,
   WalletAlreadyExistsError,
   WalletNotFoundError,
@@ -54,6 +55,10 @@ export class GlobalHttpExceptionFilter implements ExceptionFilter {
     ) {
       status = HttpStatus.NOT_FOUND; // 404
       errorCode = "RESOURCE_NOT_FOUND";
+      message = exception.message;
+    } else if (exception instanceof InvalidTransactionKindError) {
+      status = HttpStatus.BAD_REQUEST; // 400
+      errorCode = "INVALID_TRANSACTION_KIND";
       message = exception.message;
     } else if (
       exception instanceof InvalidMoneyError ||

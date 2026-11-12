@@ -34,7 +34,9 @@ export class GetWalletLedgerUseCase {
   constructor(private readonly em: EntityManager) {}
 
   async execute(query: GetWalletLedgerQuery): Promise<GetWalletLedgerResult> {
-    const limit = Math.min(Math.max(query.limit ?? 50, 1), 100);
+    const rawLimit =
+      query.limit !== undefined && Number.isFinite(query.limit) ? Math.trunc(query.limit) : 50;
+    const limit = Math.min(Math.max(rawLimit, 1), 100);
 
     const walletExists = await this.em.findOne(WalletOrmEntity, { id: query.walletId });
     if (!walletExists) {

@@ -24,7 +24,11 @@ import {
   WalletLedgerEntryOrmEntity,
   WalletOrmEntity,
 } from "../../infrastructure/database/entities";
-import { IdempotencyConflictError, WalletNotFoundError } from "../errors/application-errors";
+import {
+  IdempotencyConflictError,
+  InvalidTransactionKindError,
+  WalletNotFoundError,
+} from "../errors/application-errors";
 import { computeCanonicalPayloadHash } from "../utils/canonical-json";
 
 export interface ProcessWagerTransactionCommand {
@@ -58,9 +62,7 @@ export class ProcessWagerTransactionUseCase {
   async execute(command: ProcessWagerTransactionCommand): Promise<ProcessWagerTransactionResult> {
     // 0. Bloqueio estrito de OPENING submetido externamente
     if (command.kind === WagerTransactionKind.Opening) {
-      throw new Error(
-        "OPENING transaction kind is internal and cannot be submitted via API or messaging."
-      );
+      throw new InvalidTransactionKindError(command.kind);
     }
 
     const inputMoney = Money.from(command.money);
@@ -83,6 +85,10 @@ export class ProcessWagerTransactionUseCase {
     const payloadHash = computeCanonicalPayloadHash(canonicalBusinessPayload);
 
     return await this.em.transactional(async (txEm) => {
+      if (typeof txEm.getConnection === "function") {
+        await txEm.getConnection().execute("SET LOCAL lock_timeout = '5000ms'");
+      }
+
       // 2. Bloqueio pessimista por walletId PRIMEIRO (unidade fundamental de concorrência)
       const walletOrm = await txEm.findOne(
         WalletOrmEntity,

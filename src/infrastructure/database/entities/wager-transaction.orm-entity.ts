@@ -42,7 +42,7 @@ export class WagerTransactionOrmEntity {
   @Property({ type: "varchar", length: 100 })
   roundId!: string;
 
-  @Property({ type: "gameId", length: 100 })
+  @Property({ type: "varchar", length: 100 })
   gameId!: string;
 
   @Property({ type: "varchar", length: 20 })

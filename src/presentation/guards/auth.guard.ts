@@ -22,7 +22,8 @@ export class AuthGuard implements CanActivate {
     }
 
     // Identidade do provedor injetada no request
-    const providerHeader = request.headers["x-provider-id"];
+    const rawHeader = request.headers["x-provider-id"];
+    const providerHeader = Array.isArray(rawHeader) ? rawHeader[0] : rawHeader;
     request.providerIdentity = {
       providerId: providerHeader || "provider-a",
       authenticated: true,
