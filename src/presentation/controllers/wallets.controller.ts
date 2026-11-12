@@ -1,5 +1,12 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query } from "@nestjs/common";
-import { ApiOperation, ApiParam, ApiQuery, ApiResponse, ApiTags } from "@nestjs/swagger";
+import {
+  ApiOperation,
+  ApiParam,
+  ApiQuery,
+  ApiResponse,
+  ApiSecurity,
+  ApiTags,
+} from "@nestjs/swagger";
 import { GetWalletUseCase } from "../../application/use-cases/get-wallet.use-case";
 import { GetWalletLedgerUseCase } from "../../application/use-cases/get-wallet-ledger.use-case";
 import { OpenWalletUseCase } from "../../application/use-cases/open-wallet.use-case";
@@ -14,6 +21,7 @@ import {
 export { CreateWalletDto };
 
 @ApiTags("Wallets")
+@ApiSecurity("x-provider-id")
 @Controller("wallets")
 export class WalletsController {
   constructor(

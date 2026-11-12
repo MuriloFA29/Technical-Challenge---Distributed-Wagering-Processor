@@ -19,5 +19,6 @@ export class MoneyDto {
   })
   @IsString()
   @Length(3, 3, { message: "currency must be a 3-letter ISO-4217 code" })
+  @Matches(/^[A-Z]{3}$/, { message: "currency must be an uppercase 3-letter ISO-4217 code" })
   currency!: string;
 }

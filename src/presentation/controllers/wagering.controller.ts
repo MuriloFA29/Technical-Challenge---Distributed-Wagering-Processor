@@ -10,7 +10,14 @@ import {
   Post,
   Req,
 } from "@nestjs/common";
-import { ApiHeader, ApiOperation, ApiParam, ApiResponse, ApiTags } from "@nestjs/swagger";
+import {
+  ApiHeader,
+  ApiOperation,
+  ApiParam,
+  ApiResponse,
+  ApiSecurity,
+  ApiTags,
+} from "@nestjs/swagger";
 import { GetTransactionUseCase } from "../../application/use-cases/get-transaction.use-case";
 import { ProcessWagerTransactionUseCase } from "../../application/use-cases/process-wager-transaction.use-case";
 import { logFinancialEvent } from "../../infrastructure/observability/app-logger";
@@ -22,6 +29,7 @@ import type { CorrelatedRequest } from "../middleware/correlation-id.middleware"
 export { SubmitTransactionDto };
 
 @ApiTags("Wagering")
+@ApiSecurity("x-provider-id")
 @Controller()
 export class WageringController {
   constructor(
@@ -61,8 +69,12 @@ export class WageringController {
       throw new ForbiddenException("Provider identity does not match body providerId");
     }
 
+    const trimmedIdempotencyKey =
+      typeof idempotencyKeyHeader === "string" ? idempotencyKeyHeader.trim() : "";
     const idempotencyKey =
-      idempotencyKeyHeader || `${body.providerId}:${body.externalTransactionId}`;
+      trimmedIdempotencyKey.length > 0
+        ? trimmedIdempotencyKey
+        : `${body.providerId}:${body.externalTransactionId}`;
 
     const result = await this.processWagerTxUseCase.execute({
       providerId: body.providerId,

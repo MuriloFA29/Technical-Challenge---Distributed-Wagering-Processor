@@ -5,6 +5,7 @@ export function configureApp(app: INestApplication): OpenAPIObject {
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
+      forbidNonWhitelisted: true,
       transform: true,
     })
   );

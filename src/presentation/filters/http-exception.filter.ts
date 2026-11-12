@@ -2,6 +2,7 @@ import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus } from
 import { Response } from "express";
 import {
   IdempotencyConflictError,
+  InvalidCursorError,
   InvalidTransactionKindError,
   TransactionNotFoundError,
   WalletAlreadyExistsError,
@@ -19,6 +20,35 @@ import {
 } from "../../domain/errors/domain-errors";
 import { logger } from "../../infrastructure/observability/app-logger";
 
+function extractPgError(exception: unknown): { code?: string; constraint?: string } {
+  if (!exception || typeof exception !== "object") {
+    return {};
+  }
+  const err = exception as {
+    code?: unknown;
+    constraint?: unknown;
+    driverError?: { code?: unknown; constraint?: unknown };
+    cause?: { code?: unknown; constraint?: unknown };
+  };
+  const code =
+    typeof err.code === "string"
+      ? err.code
+      : typeof err.driverError?.code === "string"
+        ? err.driverError.code
+        : typeof err.cause?.code === "string"
+          ? err.cause.code
+          : undefined;
+  const constraint =
+    typeof err.constraint === "string"
+      ? err.constraint
+      : typeof err.driverError?.constraint === "string"
+        ? err.driverError.constraint
+        : typeof err.cause?.constraint === "string"
+          ? err.cause.constraint
+          : undefined;
+  return { code, constraint };
+}
+
 @Catch()
 export class GlobalHttpExceptionFilter implements ExceptionFilter {
   catch(exception: unknown, host: ArgumentsHost): void {
@@ -34,6 +64,20 @@ export class GlobalHttpExceptionFilter implements ExceptionFilter {
       const res = exception.getResponse();
       const resObj =
         typeof res === "object" && res !== null ? (res as Record<string, unknown>) : null;
+
+      if (
+        status === HttpStatus.SERVICE_UNAVAILABLE &&
+        resObj &&
+        "database" in resObj &&
+        "sqs" in resObj
+      ) {
+        response.status(status).json({
+          statusCode: status,
+          ...resObj,
+        });
+        return;
+      }
+
       if (typeof res === "string") {
         message = res;
       } else if (Array.isArray(resObj?.message)) {
@@ -67,7 +111,8 @@ export class GlobalHttpExceptionFilter implements ExceptionFilter {
       message = exception.message;
     } else if (
       exception instanceof InvalidMoneyError ||
-      exception instanceof ReferenceRequirementError
+      exception instanceof ReferenceRequirementError ||
+      exception instanceof InvalidCursorError
     ) {
       status = HttpStatus.BAD_REQUEST; // 400
       errorCode = "INVALID_PAYLOAD";
@@ -87,7 +132,23 @@ export class GlobalHttpExceptionFilter implements ExceptionFilter {
       errorCode = "DOMAIN_ERROR";
       message = exception.message;
     } else {
-      logger.error(`Exceção não tratada: ${(exception as Error)?.message}`);
+      const { code, constraint } = extractPgError(exception);
+      if (code === "55P03" || code === "40P01") {
+        status = HttpStatus.SERVICE_UNAVAILABLE; // 503
+        errorCode = "LOCK_TIMEOUT";
+        message = "Resource is temporarily locked; please retry";
+      } else if (code === "23505") {
+        status = HttpStatus.CONFLICT; // 409
+        if (constraint?.includes("wallet")) {
+          errorCode = "WALLET_ALREADY_EXISTS";
+          message = "Wallet already exists for player and currency";
+        } else {
+          errorCode = "IDEMPOTENCY_CONFLICT";
+          message = "Duplicate resource conflict";
+        }
+      } else {
+        logger.error(`Exceção não tratada: ${(exception as Error)?.message}`);
+      }
     }
 
     response.status(status).json({

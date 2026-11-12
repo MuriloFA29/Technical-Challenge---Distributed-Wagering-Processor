@@ -7,15 +7,36 @@ export interface CorrelatedRequest extends Request {
   correlationId?: string;
 }
 
+const MAX_CORRELATION_ID_LENGTH = 128;
+
+function hasControlChars(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code < 0x20 || code === 0x7f) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function pickNonEmptyHeader(value: string | string[] | undefined): string | null {
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (trimmed.length > 0 && !hasControlChars(trimmed)) {
+      return trimmed.slice(0, MAX_CORRELATION_ID_LENGTH);
+    }
+  }
+  return null;
+}
+
 @Injectable()
 export class CorrelationIdMiddleware implements NestMiddleware {
   use(req: CorrelatedRequest, res: Response, next: NextFunction): void {
-    const rawCorrelationId = req.headers["x-correlation-id"] ?? req.headers["x-request-id"];
-    const headerValue = Array.isArray(rawCorrelationId) ? rawCorrelationId[0] : rawCorrelationId;
     const correlationId =
-      typeof headerValue === "string" && headerValue.trim().length > 0
-        ? headerValue.trim()
-        : randomUUID();
+      pickNonEmptyHeader(req.headers["x-correlation-id"]) ??
+      pickNonEmptyHeader(req.headers["x-request-id"]) ??
+      randomUUID();
 
     req.correlationId = correlationId;
     res.setHeader("X-Correlation-Id", correlationId);

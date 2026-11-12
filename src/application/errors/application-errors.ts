@@ -37,3 +37,9 @@ export class InvalidTransactionKindError extends ApplicationError {
     super(`${kind} transaction kind is internal and cannot be submitted via API or messaging.`);
   }
 }
+
+export class InvalidCursorError extends ApplicationError {
+  constructor(message = "Invalid pagination cursor") {
+    super(message);
+  }
+}

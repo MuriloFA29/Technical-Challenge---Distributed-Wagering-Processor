@@ -1,5 +1,5 @@
 import { ApiProperty } from "@nestjs/swagger";
-import { Type } from "class-transformer";
+import { Transform, Type } from "class-transformer";
 import { IsNotEmpty, IsObject, IsString, ValidateNested } from "class-validator";
 import { MoneyDto } from "./money.dto";
 
@@ -8,6 +8,7 @@ export class CreateWalletDto {
     example: "player-123",
     description: "External player identifier",
   })
+  @Transform(({ value }) => (typeof value === "string" ? value.trim() : value))
   @IsString()
   @IsNotEmpty()
   playerId!: string;

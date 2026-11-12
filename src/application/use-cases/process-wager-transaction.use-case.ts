@@ -10,6 +10,7 @@ import {
 } from "../../domain/entities/wager-transaction";
 import { Wallet } from "../../domain/entities/wallet";
 import { LedgerDirection, WalletLedgerEntry } from "../../domain/entities/wallet-ledger-entry";
+import { InvalidMoneyError } from "../../domain/errors/domain-errors";
 import {
   IntegrationEvent,
   WagerTransactionPendingReference,
@@ -74,6 +75,10 @@ export class ProcessWagerTransactionUseCase {
     }
 
     const inputMoney = Money.from(command.money);
+    if (inputMoney.isNegative()) {
+      this.observeDuration(command.kind, "ERROR", startNs);
+      throw new InvalidMoneyError("Transaction amount cannot be negative");
+    }
 
     // 1. Calcular o payloadHash canônico a partir dos dados de negócio
     const canonicalBusinessPayload = {
@@ -249,6 +254,23 @@ export class ProcessWagerTransactionUseCase {
             providerId: command.providerId,
             externalTransactionId: referenceExternalTransactionId,
           });
+
+          if (
+            referenceOrm &&
+            (referenceOrm.status === WagerTransactionStatus.Rejected ||
+              referenceOrm.status === WagerTransactionStatus.Failed)
+          ) {
+            return this.recordRejection(
+              txEm,
+              command,
+              payloadHash,
+              wallet,
+              inputMoney,
+              FailureCode.ReferenceNotFound,
+              wallet.balance,
+              startNs
+            );
+          }
 
           if (!referenceOrm || referenceOrm.status !== WagerTransactionStatus.Processed) {
             // Referência não existe ou ainda não foi processada -> PENDING_REFERENCE

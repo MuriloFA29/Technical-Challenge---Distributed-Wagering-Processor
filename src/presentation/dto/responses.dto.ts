@@ -19,14 +19,17 @@ export class WalletResponseDto {
 
   @ApiProperty({ example: 1 })
   version!: number;
+
+  @ApiPropertyOptional({ example: "2026-01-01T00:00:00.000Z" })
+  createdAt?: string;
+
+  @ApiPropertyOptional({ example: "2026-01-01T00:00:00.000Z" })
+  updatedAt?: string;
 }
 
 export class LedgerEntryDto {
   @ApiProperty({ example: "0195a1b2-0000-7000-8000-000000000002" })
   id!: string;
-
-  @ApiProperty({ example: "0195a1b2-0000-7000-8000-000000000001" })
-  walletId!: string;
 
   @ApiProperty({ example: "0195a1b2-0000-7000-8000-000000000003" })
   transactionId!: string;
@@ -49,10 +52,13 @@ export class LedgerEntryDto {
 
 export class WalletLedgerResponseDto {
   @ApiProperty({ type: () => [LedgerEntryDto] })
-  entries!: LedgerEntryDto[];
+  items!: LedgerEntryDto[];
 
   @ApiPropertyOptional({ example: "eyJpZCI6IjAxOTUuLi4ifQ==" })
   nextCursor?: string;
+
+  @ApiProperty({ example: false })
+  hasMore!: boolean;
 }
 
 export class ReconciliationResponseDto {
@@ -63,13 +69,16 @@ export class ReconciliationResponseDto {
   storedBalance!: MoneyDto;
 
   @ApiProperty({ type: () => MoneyDto })
-  computedBalance!: MoneyDto;
+  calculatedBalance!: MoneyDto;
+
+  @ApiProperty({ type: () => MoneyDto })
+  difference!: MoneyDto;
 
   @ApiProperty({ example: true })
-  isConsistent!: boolean;
+  consistent!: boolean;
 
   @ApiProperty({ example: 5 })
-  entryCount!: number;
+  checkedEntries!: number;
 }
 
 export class TransactionResultResponseDto {
@@ -98,6 +107,9 @@ export class TransactionDetailResponseDto {
 
   @ApiProperty({ example: "ext-bet-1" })
   externalTransactionId!: string;
+
+  @ApiProperty({ example: "provider-a:ext-bet-1" })
+  idempotencyKey!: string;
 
   @ApiProperty({ example: "0195a1b2-0000-7000-8000-000000000001" })
   walletId!: string;
@@ -128,9 +140,6 @@ export class TransactionDetailResponseDto {
 
   @ApiPropertyOptional({ enum: FailureCode })
   failureCode?: FailureCode;
-
-  @ApiPropertyOptional({ type: () => MoneyDto })
-  observedBalance?: MoneyDto;
 
   @ApiProperty({ example: "2026-01-01T00:00:00.000Z" })
   createdAt!: string;

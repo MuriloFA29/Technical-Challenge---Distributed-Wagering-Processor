@@ -1,4 +1,4 @@
-import { CanActivate, ExecutionContext, Injectable } from "@nestjs/common";
+import { BadRequestException, CanActivate, ExecutionContext, Injectable } from "@nestjs/common";
 
 export interface ProviderIdentity {
   providerId: string;
@@ -30,8 +30,21 @@ export class AuthGuard implements CanActivate {
     // Identidade do provedor injetada no request
     const rawHeader = request.headers["x-provider-id"];
     const providerHeader = Array.isArray(rawHeader) ? rawHeader[0] : rawHeader;
+    if (
+      typeof providerHeader === "string" &&
+      providerHeader.length > 0 &&
+      providerHeader.trim().length === 0
+    ) {
+      throw new BadRequestException("X-Provider-Id header cannot be whitespace-only");
+    }
+
+    const normalizedProvider =
+      typeof providerHeader === "string" && providerHeader.trim().length > 0
+        ? providerHeader.trim()
+        : "provider-a";
+
     request.providerIdentity = {
-      providerId: providerHeader || "provider-a",
+      providerId: normalizedProvider,
       authenticated: true,
     };
 

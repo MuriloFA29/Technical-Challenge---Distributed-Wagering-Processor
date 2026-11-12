@@ -26,7 +26,7 @@ export class Money {
 
     const { amount, currency } = props;
 
-    if (typeof currency !== "string" || currency.trim().length !== 3) {
+    if (typeof currency !== "string" || !/^[A-Za-z]{3}$/.test(currency.trim())) {
       throw new InvalidMoneyError("Currency must be a valid 3-letter ISO-4217 code");
     }
 
