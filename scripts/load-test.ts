@@ -36,7 +36,9 @@ async function runLoadTest() {
 
     const data = (await res.json()) as any;
     walletId = data.id;
-    console.log(`   Wallet criada com sucesso! ID: ${walletId}, Saldo: ${data.balance.amount} BRL\n`);
+    console.log(
+      `   Wallet criada com sucesso! ID: ${walletId}, Saldo: ${data.balance.amount} BRL\n`
+    );
   } catch (err) {
     console.error(`❌ Erro inicial: ${(err as Error).message}`);
     console.log("⚠️ Verifique se a aplicação está em execução (bun run start ou docker compose up)");
@@ -48,7 +50,9 @@ async function runLoadTest() {
   const concurrency = 20;
   const metrics: RequestMetric[] = [];
 
-  console.log(`2. Executando ${totalRequests} requisições de apostas (concorrência: ${concurrency})...`);
+  console.log(
+    `2. Executando ${totalRequests} requisições de apostas (concorrência: ${concurrency})...`
+  );
   const startTime = Date.now();
 
   const chunks = Math.ceil(totalRequests / concurrency);
@@ -95,7 +99,9 @@ async function runLoadTest() {
     });
 
     await Promise.all(batchPromises);
-    process.stdout.write(`   Progresso: ${Math.min((c + 1) * concurrency, totalRequests)}/${totalRequests} requisições...\r`);
+    process.stdout.write(
+      `   Progresso: ${Math.min((c + 1) * concurrency, totalRequests)}/${totalRequests} requisições...\r`
+    );
   }
 
   const totalTimeSeconds = (Date.now() - startTime) / 1000;
@@ -131,11 +137,19 @@ async function runLoadTest() {
     method: "POST",
   });
   const recData = (await recRes.json()) as any;
-  console.log(`   Saldo em Banco:      ${recData.storedBalance.amount} ${recData.storedBalance.currency}`);
-  console.log(`   Saldo Calculado:     ${recData.calculatedBalance.amount} ${recData.calculatedBalance.currency}`);
-  console.log(`   Diferença:           ${recData.difference.amount} ${recData.difference.currency}`);
+  console.log(
+    `   Saldo em Banco:      ${recData.storedBalance.amount} ${recData.storedBalance.currency}`
+  );
+  console.log(
+    `   Saldo Calculado:     ${recData.calculatedBalance.amount} ${recData.calculatedBalance.currency}`
+  );
+  console.log(
+    `   Diferença:           ${recData.difference.amount} ${recData.difference.currency}`
+  );
   console.log(`   Lançamentos Ledger:  ${recData.checkedEntries}`);
-  console.log(`   Status Consistente:  ${recData.consistent ? "✅ 100% CONSISTENTE" : "❌ DIVERGÊNCIA"}`);
+  console.log(
+    `   Status Consistente:  ${recData.consistent ? "✅ 100% CONSISTENTE" : "❌ DIVERGÊNCIA"}`
+  );
   console.log("==========================================================\n");
 }
 

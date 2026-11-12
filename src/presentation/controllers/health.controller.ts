@@ -1,6 +1,6 @@
-import { Controller, Get, HttpException, HttpStatus } from "@nestjs/common";
+import { ListQueuesCommand, SQSClient } from "@aws-sdk/client-sqs";
 import { EntityManager } from "@mikro-orm/postgresql";
-import { SQSClient, ListQueuesCommand } from "@aws-sdk/client-sqs";
+import { Controller, Get, HttpException, HttpStatus } from "@nestjs/common";
 
 @Controller("health")
 export class HealthController {

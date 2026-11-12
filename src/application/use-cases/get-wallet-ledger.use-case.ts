@@ -1,9 +1,12 @@
 import { EntityManager } from "@mikro-orm/postgresql";
-import { WalletNotFoundError } from "../errors/application-errors";
-import { WalletOrmEntity, WalletLedgerEntryOrmEntity } from "../../infrastructure/database/entities";
-import { decodeCursor, encodeCursor } from "../utils/cursor-pagination";
 import { LedgerDirection } from "../../domain/entities/wallet-ledger-entry";
 import { MoneyProps } from "../../domain/value-objects/money";
+import {
+  WalletLedgerEntryOrmEntity,
+  WalletOrmEntity,
+} from "../../infrastructure/database/entities";
+import { WalletNotFoundError } from "../errors/application-errors";
+import { decodeCursor, encodeCursor } from "../utils/cursor-pagination";
 
 export interface GetWalletLedgerQuery {
   walletId: string;
@@ -46,10 +49,11 @@ export class GetWalletLedgerUseCase {
 
     if (decoded) {
       const cursorDate = new Date(decoded.createdAt);
-      qb.andWhere(
-        "(l.created_at < ? OR (l.created_at = ? AND l.id < ?))",
-        [cursorDate, cursorDate, decoded.id]
-      );
+      qb.andWhere("(l.created_at < ? OR (l.created_at = ? AND l.id < ?))", [
+        cursorDate,
+        cursorDate,
+        decoded.id,
+      ]);
     }
 
     qb.orderBy({ createdAt: "DESC", id: "DESC" });
@@ -59,7 +63,7 @@ export class GetWalletLedgerUseCase {
     const hasMore = results.length > limit;
     const itemsToReturn = hasMore ? results.slice(0, limit) : results;
 
-    let nextCursor: string | undefined = undefined;
+    let nextCursor: string | undefined;
     if (hasMore && itemsToReturn.length > 0) {
       const last = itemsToReturn[itemsToReturn.length - 1];
       nextCursor = encodeCursor({

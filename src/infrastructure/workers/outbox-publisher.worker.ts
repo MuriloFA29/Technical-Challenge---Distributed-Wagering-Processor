@@ -1,9 +1,9 @@
+import { SendMessageCommand, SQSClient } from "@aws-sdk/client-sqs";
+import { EntityManager } from "@mikro-orm/postgresql";
 import { Injectable, Logger } from "@nestjs/common";
 import { Interval } from "@nestjs/schedule";
-import { EntityManager } from "@mikro-orm/postgresql";
-import { SendMessageCommand, SQSClient } from "@aws-sdk/client-sqs";
-import { OutboxMessageOrmEntity } from "../database/entities/outbox-message.orm-entity";
 import { OutboxMessage } from "../../domain/entities/outbox-message";
+import { OutboxMessageOrmEntity } from "../database/entities/outbox-message.orm-entity";
 
 @Injectable()
 export class OutboxPublisherWorker {
@@ -23,8 +23,7 @@ export class OutboxPublisherWorker {
     try {
       await this.em.transactional(async (txEm) => {
         const queueUrl =
-          process.env.SQS_QUEUE_URL ||
-          "http://localhost:4566/000000000000/wager-transactions.fifo";
+          process.env.SQS_QUEUE_URL || "http://localhost:4566/000000000000/wager-transactions.fifo";
 
         const now = new Date();
 
@@ -34,10 +33,7 @@ export class OutboxPublisherWorker {
           .where({
             publishedAt: null,
           })
-          .andWhere(
-            "(o.next_attempt_at IS NULL OR o.next_attempt_at <= ?)",
-            [now]
-          )
+          .andWhere("(o.next_attempt_at IS NULL OR o.next_attempt_at <= ?)", [now])
           .orderBy({ occurredAt: "ASC" })
           .limit(20)
           .getResultList();
@@ -82,9 +78,7 @@ export class OutboxPublisherWorker {
         await txEm.flush();
       });
     } catch (error) {
-      this.logger.error(
-        `Erro no processamento da outbox: ${(error as Error).message}`
-      );
+      this.logger.error(`Erro no processamento da outbox: ${(error as Error).message}`);
     } finally {
       this.isRunning = false;
     }

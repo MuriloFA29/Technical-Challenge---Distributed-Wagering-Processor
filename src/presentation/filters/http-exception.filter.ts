@@ -1,11 +1,11 @@
-import {
-  ArgumentsHost,
-  Catch,
-  ExceptionFilter,
-  HttpException,
-  HttpStatus,
-} from "@nestjs/common";
+import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus } from "@nestjs/common";
 import { Response } from "express";
+import {
+  IdempotencyConflictError,
+  TransactionNotFoundError,
+  WalletAlreadyExistsError,
+  WalletNotFoundError,
+} from "../../application/errors/application-errors";
 import {
   CurrencyMismatchError,
   DomainError,
@@ -16,12 +16,6 @@ import {
   ReferenceRequirementError,
   UnbalancedLedgerEntryError,
 } from "../../domain/errors/domain-errors";
-import {
-  IdempotencyConflictError,
-  TransactionNotFoundError,
-  WalletAlreadyExistsError,
-  WalletNotFoundError,
-} from "../../application/errors/application-errors";
 import { logger } from "../../infrastructure/observability/app-logger";
 
 @Catch()

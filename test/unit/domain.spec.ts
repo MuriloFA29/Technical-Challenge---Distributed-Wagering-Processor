@@ -1,5 +1,13 @@
 import { describe, expect, it } from "bun:test";
 import {
+  FailureCode,
+  WagerTransaction,
+  WagerTransactionKind,
+  WagerTransactionStatus,
+} from "../../src/domain/entities/wager-transaction";
+import { Wallet } from "../../src/domain/entities/wallet";
+import { LedgerDirection, WalletLedgerEntry } from "../../src/domain/entities/wallet-ledger-entry";
+import {
   CurrencyMismatchError,
   DomainError,
   InsufficientFundsError,
@@ -8,17 +16,6 @@ import {
   UnbalancedLedgerEntryError,
 } from "../../src/domain/errors/domain-errors";
 import { Money } from "../../src/domain/value-objects/money";
-import { Wallet } from "../../src/domain/entities/wallet";
-import {
-  FailureCode,
-  WagerTransaction,
-  WagerTransactionKind,
-  WagerTransactionStatus,
-} from "../../src/domain/entities/wager-transaction";
-import {
-  LedgerDirection,
-  WalletLedgerEntry,
-} from "../../src/domain/entities/wallet-ledger-entry";
 
 describe("Domain Rules & Aggregate Invariants", () => {
   describe("Wallet Aggregate", () => {
@@ -78,9 +75,9 @@ describe("Domain Rules & Aggregate Invariants", () => {
         initialBalance: Money.from({ amount: "50.00", currency: "BRL" }),
       });
 
-      expect(() =>
-        wallet.debit(Money.from({ amount: "60.00", currency: "BRL" }))
-      ).toThrow(InsufficientFundsError);
+      expect(() => wallet.debit(Money.from({ amount: "60.00", currency: "BRL" }))).toThrow(
+        InsufficientFundsError
+      );
 
       // Saldo e version intactos
       expect(wallet.balance.amount).toBe("50.00");
@@ -212,12 +209,8 @@ describe("Domain Rules & Aggregate Invariants", () => {
       expect(tx.observedBalance?.amount).toBe("90.00");
 
       // Tentar transicionar novamente deve falhar
-      expect(() => tx.reject(FailureCode.InsufficientFunds)).toThrow(
-        InvalidTransactionStateError
-      );
-      expect(() => tx.markProcessed(undefined, observed)).toThrow(
-        InvalidTransactionStateError
-      );
+      expect(() => tx.reject(FailureCode.InsufficientFunds)).toThrow(InvalidTransactionStateError);
+      expect(() => tx.markProcessed(undefined, observed)).toThrow(InvalidTransactionStateError);
     });
   });
 });

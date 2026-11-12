@@ -7,8 +7,12 @@
     "build": "tsc",
     "start": "bun run src/main.ts",
     "start:dev": "bun --watch src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check src test scripts",
+    "lint:fix": "biome check --write src test scripts",
+    "format": "biome format --write src test scripts",
     "test": "bun test",
-    "test:unit": "bun test src/domain",
+    "test:unit": "bun test test/unit",
     "test:integration": "bun test test/integration",
     "test:concurrency": "bun test test/concurrency",
     "test:load": "bun run scripts/load-test.ts",
@@ -35,6 +39,7 @@
     "uuid": "^11.1.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.6.7",
     "@mikro-orm/cli": "^6.4.8",
     "@types/express": "^5.0.6",
     "@types/node": "^22.13.4",

@@ -19,7 +19,7 @@ export class InboxMessage {
     public readonly consumerName: string,
     public readonly payloadHash: string,
     public readonly receivedAt: Date,
-    private _processedAt?: Date,
+    private _processedAt?: Date
   ) {}
 
   static receive(props: ReceiveInboxProps): InboxMessage {
@@ -27,7 +27,7 @@ export class InboxMessage {
       props.messageId,
       props.consumerName,
       props.payloadHash,
-      props.receivedAt ?? new Date(),
+      props.receivedAt ?? new Date()
     );
   }
 
@@ -37,7 +37,7 @@ export class InboxMessage {
       state.consumerName,
       state.payloadHash,
       state.receivedAt,
-      state.processedAt,
+      state.processedAt
     );
   }
 

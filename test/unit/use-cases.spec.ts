@@ -1,18 +1,18 @@
 import { beforeEach, describe, expect, it } from "bun:test";
-import { InMemoryTestEntityManager } from "../helpers/mock-entity-manager";
-import { OpenWalletUseCase } from "../../src/application/use-cases/open-wallet.use-case";
-import { ProcessWagerTransactionUseCase } from "../../src/application/use-cases/process-wager-transaction.use-case";
-import { ReconcileWalletUseCase } from "../../src/application/use-cases/reconcile-wallet.use-case";
 import {
   IdempotencyConflictError,
   WalletAlreadyExistsError,
 } from "../../src/application/errors/application-errors";
+import { OpenWalletUseCase } from "../../src/application/use-cases/open-wallet.use-case";
+import { ProcessWagerTransactionUseCase } from "../../src/application/use-cases/process-wager-transaction.use-case";
+import { ReconcileWalletUseCase } from "../../src/application/use-cases/reconcile-wallet.use-case";
 import {
   FailureCode,
   WagerTransactionKind,
   WagerTransactionStatus,
 } from "../../src/domain/entities/wager-transaction";
 import { LedgerDirection } from "../../src/domain/entities/wallet-ledger-entry";
+import { InMemoryTestEntityManager } from "../helpers/mock-entity-manager";
 
 describe("Application Layer & Use Cases", () => {
   let em: InMemoryTestEntityManager;

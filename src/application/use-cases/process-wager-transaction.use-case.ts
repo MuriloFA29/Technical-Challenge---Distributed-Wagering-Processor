@@ -1,36 +1,30 @@
 import { EntityManager, LockMode } from "@mikro-orm/postgresql";
 import { v7 as uuidv7 } from "uuid";
-import { Money, MoneyProps } from "../../domain/value-objects/money";
-import { Wallet } from "../../domain/entities/wallet";
+import { OutboxMessage } from "../../domain/entities/outbox-message";
 import {
   FailureCode,
   WagerTransaction,
   WagerTransactionKind,
   WagerTransactionStatus,
 } from "../../domain/entities/wager-transaction";
+import { Wallet } from "../../domain/entities/wallet";
+import { LedgerDirection, WalletLedgerEntry } from "../../domain/entities/wallet-ledger-entry";
 import {
-  LedgerDirection,
-  WalletLedgerEntry,
-} from "../../domain/entities/wallet-ledger-entry";
-import {
-  WalletBalanceChanged,
   WagerTransactionPendingReference,
   WagerTransactionProcessed,
   WagerTransactionRejected,
+  WalletBalanceChanged,
 } from "../../domain/events/integration-event";
-import { OutboxMessage } from "../../domain/entities/outbox-message";
+import { Money, MoneyProps } from "../../domain/value-objects/money";
 import {
-  IdempotencyConflictError,
-  WalletNotFoundError,
-} from "../errors/application-errors";
-import { computeCanonicalPayloadHash } from "../utils/canonical-json";
-import {
-  WalletOrmEntity,
-  WagerTransactionOrmEntity,
-  WalletLedgerEntryOrmEntity,
   InboxMessageOrmEntity,
   OutboxMessageOrmEntity,
+  WagerTransactionOrmEntity,
+  WalletLedgerEntryOrmEntity,
+  WalletOrmEntity,
 } from "../../infrastructure/database/entities";
+import { IdempotencyConflictError, WalletNotFoundError } from "../errors/application-errors";
+import { computeCanonicalPayloadHash } from "../utils/canonical-json";
 
 export interface ProcessWagerTransactionCommand {
   providerId: string;
@@ -58,12 +52,14 @@ export interface ProcessWagerTransactionResult {
 }
 
 export class ProcessWagerTransactionUseCase {
-  constructor(private readonly em: EntityManager) { }
+  constructor(private readonly em: EntityManager) {}
 
   async execute(command: ProcessWagerTransactionCommand): Promise<ProcessWagerTransactionResult> {
     // 0. Bloqueio estrito de OPENING submetido externamente
     if (command.kind === WagerTransactionKind.Opening) {
-      throw new Error("OPENING transaction kind is internal and cannot be submitted via API or messaging.");
+      throw new Error(
+        "OPENING transaction kind is internal and cannot be submitted via API or messaging."
+      );
     }
 
     const inputMoney = Money.from(command.money);

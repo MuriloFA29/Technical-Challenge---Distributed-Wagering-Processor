@@ -1,27 +1,22 @@
 import { EntityManager } from "@mikro-orm/postgresql";
 import { v7 as uuidv7 } from "uuid";
-import { Money, MoneyProps } from "../../domain/value-objects/money";
-import { Wallet } from "../../domain/entities/wallet";
+import { OutboxMessage } from "../../domain/entities/outbox-message";
 import {
   WagerTransaction,
   WagerTransactionKind,
   WagerTransactionStatus,
 } from "../../domain/entities/wager-transaction";
+import { Wallet } from "../../domain/entities/wallet";
+import { LedgerDirection, WalletLedgerEntry } from "../../domain/entities/wallet-ledger-entry";
+import { WalletBalanceChanged } from "../../domain/events/integration-event";
+import { Money, MoneyProps } from "../../domain/value-objects/money";
 import {
-  LedgerDirection,
-  WalletLedgerEntry,
-} from "../../domain/entities/wallet-ledger-entry";
-import {
-  WalletBalanceChanged,
-} from "../../domain/events/integration-event";
-import { OutboxMessage } from "../../domain/entities/outbox-message";
-import { WalletAlreadyExistsError } from "../errors/application-errors";
-import {
-  WalletOrmEntity,
+  OutboxMessageOrmEntity,
   WagerTransactionOrmEntity,
   WalletLedgerEntryOrmEntity,
-  OutboxMessageOrmEntity,
+  WalletOrmEntity,
 } from "../../infrastructure/database/entities";
+import { WalletAlreadyExistsError } from "../errors/application-errors";
 
 export interface OpenWalletCommand {
   playerId: string;

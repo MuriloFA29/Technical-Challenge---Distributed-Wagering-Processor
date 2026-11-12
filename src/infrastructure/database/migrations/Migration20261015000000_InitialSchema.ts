@@ -122,8 +122,10 @@ export class Migration20261015000000_InitialSchema extends Migration {
   }
 
   async down(): Promise<void> {
-    this.addSql('DROP TRIGGER IF EXISTS trg_prevent_ledger_update_or_delete ON "wallet_ledger_entries";');
-    this.addSql('DROP FUNCTION IF EXISTS fn_prevent_ledger_modification();');
+    this.addSql(
+      'DROP TRIGGER IF EXISTS trg_prevent_ledger_update_or_delete ON "wallet_ledger_entries";'
+    );
+    this.addSql("DROP FUNCTION IF EXISTS fn_prevent_ledger_modification();");
     this.addSql('DROP TABLE IF EXISTS "outbox_messages";');
     this.addSql('DROP TABLE IF EXISTS "inbox_messages";');
     this.addSql('DROP TABLE IF EXISTS "wallet_ledger_entries";');

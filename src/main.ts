@@ -1,7 +1,7 @@
 import "reflect-metadata";
+import { MikroORM } from "@mikro-orm/core";
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module";
-import { MikroORM } from "@mikro-orm/core";
 import { logger } from "./infrastructure/observability/app-logger";
 
 async function bootstrap() {

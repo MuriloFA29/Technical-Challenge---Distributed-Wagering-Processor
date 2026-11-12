@@ -1,20 +1,20 @@
+import { EntityManager } from "@mikro-orm/postgresql";
 import { Injectable, Logger } from "@nestjs/common";
 import { Interval } from "@nestjs/schedule";
-import { EntityManager } from "@mikro-orm/postgresql";
-import {
-  WagerTransactionOrmEntity,
-  WalletOrmEntity,
-  OutboxMessageOrmEntity,
-} from "../database/entities";
+import { v7 as uuidv7 } from "uuid";
+import { ProcessWagerTransactionUseCase } from "../../application/use-cases/process-wager-transaction.use-case";
+import { OutboxMessage } from "../../domain/entities/outbox-message";
 import {
   FailureCode,
-  WagerTransactionStatus,
   WagerTransactionKind,
+  WagerTransactionStatus,
 } from "../../domain/entities/wager-transaction";
-import { ProcessWagerTransactionUseCase } from "../../application/use-cases/process-wager-transaction.use-case";
 import { WagerTransactionRejected } from "../../domain/events/integration-event";
-import { OutboxMessage } from "../../domain/entities/outbox-message";
-import { v7 as uuidv7 } from "uuid";
+import {
+  OutboxMessageOrmEntity,
+  WagerTransactionOrmEntity,
+  WalletOrmEntity,
+} from "../database/entities";
 
 @Injectable()
 export class PendingReferenceWorker {
@@ -89,7 +89,9 @@ export class PendingReferenceWorker {
             txEm.persist(outboxOrm);
 
             await txEm.flush();
-            this.logger.warn(`Transação ${freshTx.id} expirou o TTL aguardando referência e foi rejeitada.`);
+            this.logger.warn(
+              `Transação ${freshTx.id} expirou o TTL aguardando referência e foi rejeitada.`
+            );
           });
           continue;
         }
@@ -123,7 +125,9 @@ export class PendingReferenceWorker {
             referenceExternalTransactionId: tx.referenceExternalTransactionId,
           });
 
-          this.logger.log(`Transação fora de ordem ${tx.id} reprocessada com sucesso após chegada da referência.`);
+          this.logger.log(
+            `Transação fora de ordem ${tx.id} reprocessada com sucesso após chegada da referência.`
+          );
         }
       }
     } catch (err) {

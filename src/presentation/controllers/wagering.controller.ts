@@ -9,8 +9,8 @@ import {
   Param,
   Post,
 } from "@nestjs/common";
-import { ProcessWagerTransactionUseCase } from "../../application/use-cases/process-wager-transaction.use-case";
 import { GetTransactionUseCase } from "../../application/use-cases/get-transaction.use-case";
+import { ProcessWagerTransactionUseCase } from "../../application/use-cases/process-wager-transaction.use-case";
 import { WagerTransactionKind } from "../../domain/entities/wager-transaction";
 import { MoneyProps } from "../../domain/value-objects/money";
 import { logFinancialEvent } from "../../infrastructure/observability/app-logger";
@@ -83,9 +83,6 @@ export class WageringController {
     @Param("providerId") providerId: string,
     @Param("externalTransactionId") externalTransactionId: string
   ) {
-    return await this.getTxUseCase.executeByExternalId(
-      providerId,
-      externalTransactionId
-    );
+    return await this.getTxUseCase.executeByExternalId(providerId, externalTransactionId);
   }
 }

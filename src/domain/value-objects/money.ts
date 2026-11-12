@@ -2,7 +2,7 @@ import Decimal from "decimal.js";
 import { CurrencyMismatchError, InvalidMoneyError } from "../errors/domain-errors";
 
 export interface MoneyProps {
-  amount: string;   // decimal string, ex.: "25.00"
+  amount: string; // decimal string, ex.: "25.00"
   currency: string; // ISO-4217, ex.: "BRL"
 }
 
@@ -12,7 +12,7 @@ Decimal.set({ precision: 28, rounding: Decimal.ROUND_HALF_UP });
 export class Money {
   private constructor(
     private readonly value: Decimal,
-    public readonly currency: string,
+    public readonly currency: string
   ) {}
 
   public get amount(): string {

@@ -1,5 +1,5 @@
-import { MoneyProps } from "../value-objects/money";
 import { LedgerDirection } from "../entities/wallet-ledger-entry";
+import { MoneyProps } from "../value-objects/money";
 
 export interface IntegrationEventProps<T> {
   eventId: string;

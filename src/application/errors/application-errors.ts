@@ -26,6 +26,8 @@ export class TransactionNotFoundError extends ApplicationError {
 
 export class IdempotencyConflictError extends ApplicationError {
   constructor(idempotencyKey: string) {
-    super(`Idempotency conflict for key "${idempotencyKey}": payload does not match original request`);
+    super(
+      `Idempotency conflict for key "${idempotencyKey}": payload does not match original request`
+    );
   }
 }

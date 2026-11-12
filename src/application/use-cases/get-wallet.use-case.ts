@@ -1,7 +1,7 @@
 import { EntityManager } from "@mikro-orm/postgresql";
-import { WalletNotFoundError } from "../errors/application-errors";
-import { WalletOrmEntity } from "../../infrastructure/database/entities";
 import { MoneyProps } from "../../domain/value-objects/money";
+import { WalletOrmEntity } from "../../infrastructure/database/entities";
+import { WalletNotFoundError } from "../errors/application-errors";
 
 export interface GetWalletResult {
   id: string;

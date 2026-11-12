@@ -1,10 +1,10 @@
-import { Injectable, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
 import {
   ChangeMessageVisibilityCommand,
   DeleteMessageCommand,
   ReceiveMessageCommand,
   SQSClient,
 } from "@aws-sdk/client-sqs";
+import { Injectable, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
 import { ProcessWagerTransactionUseCase } from "../../application/use-cases/process-wager-transaction.use-case";
 import { logger } from "../observability/app-logger";
 
@@ -30,8 +30,7 @@ export class SqsConsumerService implements OnModuleInit, OnModuleDestroy {
   private async startPolling() {
     this.isRunning = true;
     const queueUrl =
-      process.env.SQS_QUEUE_URL ||
-      "http://localhost:4566/000000000000/wager-transactions.fifo";
+      process.env.SQS_QUEUE_URL || "http://localhost:4566/000000000000/wager-transactions.fifo";
 
     logger.info(`Iniciando consumo de mensagens da fila SQS: ${queueUrl}`);
 
@@ -86,7 +85,8 @@ export class SqsConsumerService implements OnModuleInit, OnModuleDestroy {
       await this.processWagerTxUseCase.execute({
         providerId: eventData.providerId,
         externalTransactionId: eventData.externalTransactionId,
-        idempotencyKey: eventData.idempotencyKey || `${eventData.providerId}:${eventData.externalTransactionId}`,
+        idempotencyKey:
+          eventData.idempotencyKey || `${eventData.providerId}:${eventData.externalTransactionId}`,
         playerId: eventData.playerId,
         walletId: eventData.walletId,
         roundId: eventData.roundId,

@@ -25,14 +25,10 @@ export class Wallet {
     private _balance: Money,
     private _version: number,
     public readonly createdAt: Date,
-    private _updatedAt: Date,
+    private _updatedAt: Date
   ) {}
 
-  static open(props: {
-    id: string;
-    playerId: string;
-    initialBalance: Money;
-  }): Wallet {
+  static open(props: { id: string; playerId: string; initialBalance: Money }): Wallet {
     const now = new Date();
     const currency = props.initialBalance.currency;
 
@@ -47,7 +43,7 @@ export class Wallet {
       props.initialBalance,
       1, // Version inicia em 1 após a criação
       now,
-      now,
+      now
     );
   }
 
@@ -60,7 +56,7 @@ export class Wallet {
       state.balance,
       state.version,
       state.createdAt,
-      state.updatedAt,
+      state.updatedAt
     );
   }
 
