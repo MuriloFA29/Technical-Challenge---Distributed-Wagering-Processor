@@ -8,7 +8,7 @@
     "start": "bun run src/main.ts",
     "start:dev": "bun --watch src/main.ts",
     "typecheck": "tsc --noEmit",
-    "lint": "biome check src test scripts",
+    "lint": "biome check --error-on-warnings src test scripts",
     "lint:fix": "biome check --write src test scripts",
     "format": "biome format --write src test scripts",
     "test": "bun test",

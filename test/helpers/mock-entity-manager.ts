@@ -145,7 +145,7 @@ export class InMemoryTestEntityManager {
         return null;
       },
 
-      find: async (entityClass: any, filter: any, options?: any) => {
+      find: async (entityClass: any, filter: any, _options?: any) => {
         if (entityClass === WalletLedgerEntryOrmEntity) {
           const results: WalletLedgerEntryOrmEntity[] = [];
           for (const l of this.ledgerEntries.values()) {

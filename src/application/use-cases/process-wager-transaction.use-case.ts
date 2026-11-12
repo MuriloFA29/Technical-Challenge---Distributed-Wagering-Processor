@@ -10,6 +10,7 @@ import {
 import { Wallet } from "../../domain/entities/wallet";
 import { LedgerDirection, WalletLedgerEntry } from "../../domain/entities/wallet-ledger-entry";
 import {
+  IntegrationEvent,
   WagerTransactionPendingReference,
   WagerTransactionProcessed,
   WagerTransactionRejected,
@@ -100,7 +101,7 @@ export class ProcessWagerTransactionUseCase {
           messageId: command.inboxContext.messageId,
         });
 
-        if (existingInbox && existingInbox.processedAt) {
+        if (existingInbox?.processedAt) {
           const existingTx = await txEm.findOne(WagerTransactionOrmEntity, {
             providerId: command.providerId,
             idempotencyKey: command.idempotencyKey,
@@ -214,9 +215,10 @@ export class ProcessWagerTransactionUseCase {
       // 6. Resolução de referências (REFUND, ROLLBACK)
       let referenceOrm: WagerTransactionOrmEntity | null = null;
       if (wagerTx.requiresReference()) {
+        const referenceExternalTransactionId = command.referenceExternalTransactionId ?? "";
         referenceOrm = await txEm.findOne(WagerTransactionOrmEntity, {
           providerId: command.providerId,
-          externalTransactionId: command.referenceExternalTransactionId!,
+          externalTransactionId: referenceExternalTransactionId,
         });
 
         if (!referenceOrm || referenceOrm.status !== WagerTransactionStatus.Processed) {
@@ -254,7 +256,7 @@ export class ProcessWagerTransactionUseCase {
               transactionId: wagerTx.id,
               providerId: wagerTx.providerId,
               externalTransactionId: wagerTx.externalTransactionId,
-              referenceExternalTransactionId: command.referenceExternalTransactionId!,
+              referenceExternalTransactionId,
               walletId: wallet.id,
               playerId: wallet.playerId,
               roundId: wagerTx.roundId,
@@ -416,7 +418,7 @@ export class ProcessWagerTransactionUseCase {
             balanceAfter = movement.balanceAfter;
           }
         }
-      } catch (error) {
+      } catch (_error) {
         // Exceção de saldo insuficiente ao apostar
         return this.recordRejection(
           txEm,
@@ -621,7 +623,7 @@ export class ProcessWagerTransactionUseCase {
     };
   }
 
-  private enqueueOutbox(txEm: EntityManager, event: any): void {
+  private enqueueOutbox(txEm: EntityManager, event: IntegrationEvent<unknown>): void {
     const outboxMsg = OutboxMessage.enqueue(event);
     const outboxOrm = txEm.create(OutboxMessageOrmEntity, {
       id: outboxMsg.id,

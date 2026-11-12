@@ -8,7 +8,6 @@ import {
   WagerTransactionStatus,
 } from "../../src/domain/entities/wager-transaction";
 import { LedgerDirection } from "../../src/domain/entities/wallet-ledger-entry";
-import { Money } from "../../src/domain/value-objects/money";
 import { InMemoryTestEntityManager } from "../helpers/mock-entity-manager";
 
 describe("Real Concurrency & Resilience Tests (Seção 13 do README)", () => {

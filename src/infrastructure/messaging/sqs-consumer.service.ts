@@ -1,6 +1,7 @@
 import {
   ChangeMessageVisibilityCommand,
   DeleteMessageCommand,
+  Message,
   ReceiveMessageCommand,
   SQSClient,
 } from "@aws-sdk/client-sqs";
@@ -73,8 +74,8 @@ export class SqsConsumerService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async processMessage(msg: any, queueUrl: string) {
-    const messageId = msg.MessageId;
+  private async processMessage(msg: Message, queueUrl: string) {
+    const messageId = msg.MessageId ?? "";
     const receiptHandle = msg.ReceiptHandle;
 
     try {

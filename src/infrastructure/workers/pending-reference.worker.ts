@@ -4,17 +4,9 @@ import { Interval } from "@nestjs/schedule";
 import { v7 as uuidv7 } from "uuid";
 import { ProcessWagerTransactionUseCase } from "../../application/use-cases/process-wager-transaction.use-case";
 import { OutboxMessage } from "../../domain/entities/outbox-message";
-import {
-  FailureCode,
-  WagerTransactionKind,
-  WagerTransactionStatus,
-} from "../../domain/entities/wager-transaction";
+import { FailureCode, WagerTransactionStatus } from "../../domain/entities/wager-transaction";
 import { WagerTransactionRejected } from "../../domain/events/integration-event";
-import {
-  OutboxMessageOrmEntity,
-  WagerTransactionOrmEntity,
-  WalletOrmEntity,
-} from "../database/entities";
+import { OutboxMessageOrmEntity, WagerTransactionOrmEntity } from "../database/entities";
 
 @Injectable()
 export class PendingReferenceWorker {
@@ -97,9 +89,12 @@ export class PendingReferenceWorker {
         }
 
         // 2. Verificar se a referência chegou
+        if (!tx.referenceExternalTransactionId) {
+          continue;
+        }
         const reference = await this.em.findOne(WagerTransactionOrmEntity, {
           providerId: tx.providerId,
-          externalTransactionId: tx.referenceExternalTransactionId!,
+          externalTransactionId: tx.referenceExternalTransactionId,
           status: WagerTransactionStatus.Processed,
         });
 

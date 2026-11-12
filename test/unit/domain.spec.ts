@@ -8,8 +8,6 @@ import {
 import { Wallet } from "../../src/domain/entities/wallet";
 import { LedgerDirection, WalletLedgerEntry } from "../../src/domain/entities/wallet-ledger-entry";
 import {
-  CurrencyMismatchError,
-  DomainError,
   InsufficientFundsError,
   InvalidTransactionStateError,
   ReferenceRequirementError,

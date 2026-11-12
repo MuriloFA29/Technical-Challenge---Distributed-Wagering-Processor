@@ -88,7 +88,7 @@ async function runLoadTest() {
           statusCode: response.status,
           success: response.ok,
         });
-      } catch (e) {
+      } catch (_e) {
         const latencyMs = performance.now() - startReq;
         metrics.push({
           latencyMs,

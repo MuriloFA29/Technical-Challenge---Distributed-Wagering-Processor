@@ -31,8 +31,15 @@ export class GlobalHttpExceptionFilter implements ExceptionFilter {
     if (exception instanceof HttpException) {
       status = exception.getStatus();
       const res = exception.getResponse();
-      message = typeof res === "string" ? res : (res as any).message || message;
-      errorCode = (res as any).error || "HTTP_ERROR";
+      const resObj =
+        typeof res === "object" && res !== null ? (res as Record<string, unknown>) : null;
+      message =
+        typeof res === "string"
+          ? res
+          : typeof resObj?.message === "string"
+            ? resObj.message
+            : message;
+      errorCode = typeof resObj?.error === "string" ? resObj.error : "HTTP_ERROR";
     } else if (exception instanceof IdempotencyConflictError) {
       status = HttpStatus.CONFLICT; // 409
       errorCode = "IDEMPOTENCY_CONFLICT";

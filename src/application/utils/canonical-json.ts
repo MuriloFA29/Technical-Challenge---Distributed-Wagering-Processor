@@ -1,4 +1,4 @@
-import { createHash } from "crypto";
+import { createHash } from "node:crypto";
 
 /**
  * Ordena recursivamente todas as chaves de um objeto para produzir um JSON canônico e determinístico.
@@ -9,14 +9,14 @@ export function canonicalizeJson(obj: unknown): string {
   }
 
   if (Array.isArray(obj)) {
-    return "[" + obj.map((item) => canonicalizeJson(item)).join(",") + "]";
+    return `[${obj.map((item) => canonicalizeJson(item)).join(",")}]`;
   }
 
   const record = obj as Record<string, unknown>;
   const sortedKeys = Object.keys(record).sort();
   const pairs = sortedKeys.map((key) => `${JSON.stringify(key)}:${canonicalizeJson(record[key])}`);
 
-  return "{" + pairs.join(",") + "}";
+  return `{${pairs.join(",")}}`;
 }
 
 /**

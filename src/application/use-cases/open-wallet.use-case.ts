@@ -1,11 +1,7 @@
 import { EntityManager } from "@mikro-orm/postgresql";
 import { v7 as uuidv7 } from "uuid";
 import { OutboxMessage } from "../../domain/entities/outbox-message";
-import {
-  WagerTransaction,
-  WagerTransactionKind,
-  WagerTransactionStatus,
-} from "../../domain/entities/wager-transaction";
+import { WagerTransaction, WagerTransactionKind } from "../../domain/entities/wager-transaction";
 import { Wallet } from "../../domain/entities/wallet";
 import { LedgerDirection, WalletLedgerEntry } from "../../domain/entities/wallet-ledger-entry";
 import { WalletBalanceChanged } from "../../domain/events/integration-event";
