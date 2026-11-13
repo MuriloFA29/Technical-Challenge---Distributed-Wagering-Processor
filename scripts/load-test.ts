@@ -69,6 +69,7 @@ async function runLoadTest() {
           headers: {
             "Content-Type": "application/json",
             "Idempotency-Key": idempotencyKey,
+            "x-provider-id": "provider-load",
           },
           body: JSON.stringify({
             providerId: "provider-load",
