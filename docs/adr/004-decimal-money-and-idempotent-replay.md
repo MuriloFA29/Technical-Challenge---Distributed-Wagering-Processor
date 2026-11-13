@@ -1,42 +1,42 @@
-# ADR 004: Arbitrary-Precision `Money` & Canonical SHA-256 Idempotent Replay
+# ADR 004: `Money` de Precisão Arbitrária & Replay Idempotente com SHA-256 Canônico
 
-- **Status**: Accepted
-- **Date**: 2026-11-12
-- **Related**: [ARCHITECTURE.md](../../ARCHITECTURE.md)
+- **Status**: Aceito
+- **Data**: 2026-11-12
+- **Relacionado**: [ARCHITECTURE.md](../../ARCHITECTURE.md)
 
 ---
 
-## Context
+## Contexto
 
-JavaScript IEEE-754 `number` arithmetic introduces binary floating-point rounding errors (e.g., `0.1 + 0.2 !== 0.3`), which are unacceptable in financial ledgers.
+A aritmética de `number` IEEE-754 em JavaScript introduz erros de arredondamento de ponto flutuante binário (ex.: `0.1 + 0.2 !== 0.3`), o que é inaceitável em ledgers financeiros.
 
-Furthermore, network retries and SQS *at-least-once* deliveries mean identical wagering requests will arrive multiple times. If a client accidentally reuses an `Idempotency-Key` with a different amount or target wallet, silent acceptance would corrupt balances; conversely, if a valid retry arrives *after* subsequent bets have changed the wallet's current balance, returning the *current* balance instead of the *balance observed when the original transaction executed* would violate idempotent replay fidelity.
+Além disso, retries de rede e entregas *at-least-once* do SQS fazem com que requisições idênticas de aposta cheguem múltiplas vezes. Se um cliente reutilizar acidentalmente uma `Idempotency-Key` com um valor ou carteira diferente, aceitar silenciosamente corromperia saldos; por outro lado, se um retry válido chegar *depois* que apostas subsequentes alteraram o saldo atual da carteira, retornar o saldo *atual* em vez do saldo *observado quando a transação original foi executada* violaria a fidelidade do replay idempotente.
 
-## Decision
+## Decisão
 
-1. **Immutable `Money` Value Object (`decimal.js`)**:
-   - Configure `decimal.js` with precision `28` and `Decimal.ROUND_HALF_UP`.
-   - Enforce a maximum of 2 decimal places (`"25.00"`) and reject `NaN`, `Infinity`, empty strings, and negative values at construction.
-   - Require matching currencies on all arithmetic operations (`CurrencyMismatchError` otherwise).
-   - Store monetary columns in PostgreSQL as `NUMERIC(18, 2)`.
-2. **Canonical JSON + SHA-256 `payloadHash` Idempotency**:
-   - Default `Idempotency-Key` to `${providerId}:${externalTransactionId}` when not explicitly provided.
-   - Compute a SHA-256 digest over a recursively key-sorted canonical JSON representation (`canonicalJson`) of the business payload.
-   - On duplicate `(provider_id, idempotency_key)`:
-     - If `payloadHash` diverges → throw `IdempotencyConflictError` (HTTP `409 IDEMPOTENCY_CONFLICT`).
-     - If `payloadHash` matches → increment `wagering_duplicate_transactions_total` and return `200 OK` with `idempotentReplay: true` and the persisted `observed_balance` stored on `wager_transactions`.
+1. **Value Object `Money` Imutável (`decimal.js`)**:
+   - Configurar `decimal.js` com precisão `28` e `Decimal.ROUND_HALF_UP`.
+   - Impor no máximo 2 casas decimais (`"25.00"`) e rejeitar `NaN`, `Infinity`, strings vazias e valores negativos na construção.
+   - Exigir moedas correspondentes em todas as operações aritméticas (`CurrencyMismatchError` caso contrário).
+   - Armazenar colunas monetárias no PostgreSQL como `NUMERIC(18, 2)`.
+2. **JSON Canônico + Idempotência por `payloadHash` SHA-256**:
+   - Assumir `Idempotency-Key` padrão `${providerId}:${externalTransactionId}` quando não informada explicitamente.
+   - Calcular um digest SHA-256 sobre uma representação JSON canônica com chaves ordenadas recursivamente (`canonicalJson`) do payload de negócio.
+   - Em caso de duplicidade em `(provider_id, idempotency_key)`:
+     - Se `payloadHash` divergir → lançar `IdempotencyConflictError` (HTTP `409 IDEMPOTENCY_CONFLICT`).
+     - Se `payloadHash` coincidir → incrementar `wagering_duplicate_transactions_total` e retornar `200 OK` com `idempotentReplay: true` e o `observed_balance` persistido em `wager_transactions`.
 
-## Consequences
+## Consequências
 
-### Positive
-- **Exact decimal arithmetic**: Eliminates IEEE-754 rounding drift across domain calculations and PostgreSQL `NUMERIC(18, 2)` persistence.
-- **Deterministic conflict detection**: Key-ordering differences in JSON serialization never cause false `409` conflicts, while any semantic payload change is caught immediately.
-- **Faithful replay responses**: Retried requests always receive the exact `observed_balance` from the original execution, regardless of subsequent wallet activity.
+### Positivas
+- **Aritmética decimal exata**: Elimina desvios de arredondamento IEEE-754 nos cálculos de domínio e na persistência `NUMERIC(18, 2)` do PostgreSQL.
+- **Detecção determinística de conflitos**: Diferenças na ordem das chaves na serialização JSON nunca causam falsos `409`, enquanto qualquer mudança semântica no payload é detectada imediatamente.
+- **Respostas de replay fiéis**: Requisições reenviadas sempre recebem o `observed_balance` exato da execução original, independentemente de movimentações posteriores na carteira.
 
-### Trade-offs & Mitigations
-- **String serialization in API payloads**: Monetary amounts are represented as decimal strings (e.g., `"25.00"`) rather than JSON numbers. *Mitigation*: Documented in OpenAPI/Swagger DTOs (`MoneyDto`) and enforced via `class-validator`.
+### Trade-offs & Mitigações
+- **Serialização em string nos payloads da API**: Valores monetários são representados como strings decimais (ex.: `"25.00"`) em vez de números JSON. *Mitigação*: Documentado nos DTOs OpenAPI/Swagger (`MoneyDto`) e validado via `class-validator`.
 
-## Implementation References
+## Referências de Implementação
 
 - [`Money`](../../src/domain/value-objects/money.ts)
 - [`canonical-json.ts`](../../src/application/utils/canonical-json.ts)
