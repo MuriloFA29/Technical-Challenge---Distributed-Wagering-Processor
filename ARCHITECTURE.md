@@ -1,65 +1,179 @@
-# Distributed Wagering Processor — Architecture & Design Document
+# Distributed Wagering Processor — Arquitetura & Design
 
-Este documento detalha as decisões arquiteturais, garantias de concorrência, consistência financeira e trade-offs adotados na implementação do **Distributed Wagering Processor** para a Jungle Gaming.
-
----
-
-## 1. Visão Geral da Arquitetura
-
-O sistema é construído sobre os princípios de **Domain-Driven Design (DDD)**, **Hexagonal Architecture (Ports and Adapters)** e **EDA (Event-Driven Architecture)**, rodando sob o runtime **Bun 1.x** com o framework **NestJS** em modo TypeScript estrito.
-
-```
-       [ HTTP API (Express/NestJS) ]       [ AWS SQS FIFO Consumer ]
-                     │                                 │
-                     └───────────────┬─────────────────┘
-                                     ▼
-                     [ Application Layer: Use Cases ]
-                     (ProcessWagerTransaction, OpenWallet)
-                                     │
-                     ┌───────────────┴─────────────────┐
-                     ▼                                 ▼
-             [ Domain Core (DDD) ]        [ Infrastructure (MikroORM) ]
-          (Wallet, WagerTransaction,       (PostgreSQL Schema, Constraints,
-           WalletLedgerEntry, Money)        Pessimistic Lock, SQS Client)
-```
+Este documento detalha os padrões arquiteturais, garantias de concorrência, invariantes em nível de banco de dados, topologia de mensageria e design de observabilidade do **Distributed Wagering Processor**.
 
 ---
 
-## 2. Decisão de ORM e Concorrência (Seções 4, 5 e 8)
+## 1. Arquitetura do Sistema
+
+O serviço é estruturado em torno de **Domain-Driven Design (DDD)**, **Arquitetura Hexagonal (Ports & Adapters)** e **Arquitetura Orientada a Eventos (EDA)**, executando em **Bun 1.2** com **NestJS 10** em modo TypeScript estrito.
+
+```mermaid
+flowchart TB
+  subgraph Clients["Clientes Externos & Brokers"]
+    HTTP["Provedores de Jogos / Clientes API"]
+    SQSIn["SQS FIFO: wager-transactions.fifo"]
+    SQSDLQ["SQS FIFO DLQ: wager-transactions-dlq.fifo"]
+    SQSOut["SQS FIFO: wager-events.fifo"]
+  end
+
+  subgraph Presentation["Apresentação & Adaptadores de Entrada"]
+    Controllers["REST Controllers + AuthGuard + CorrelationIdMiddleware"]
+    Swagger["OpenAPI / Swagger UI (/docs)"]
+    MetricsEP["Endpoint Prometheus (/metrics)"]
+    HealthEP["Health Probes (/health/live, /health/ready)"]
+    SQSConsumer["SqsConsumerService (consumerName: WagerSqsConsumer)"]
+  end
+
+  subgraph Core["Núcleo de Aplicação & Domínio"]
+    UseCases["Use Cases (ProcessWager, OpenWallet, ReconcileWallet)"]
+    Domain["Entidades de Domínio & VOs (Wallet, WagerTransaction, LedgerEntry, Money)"]
+  end
+
+  subgraph Persistence["PostgreSQL 16 (MikroORM Unit of Work)"]
+    WalletsDB[("wallets (FOR UPDATE + lock_timeout)")]
+    TxDB[("wager_transactions (idx_unique_reversal)")]
+    LedgerDB[("wallet_ledger_entries (Trigger Imutável)")]
+    InboxDB[("inbox_messages")]
+    OutboxDB[("outbox_messages")]
+  end
+
+  subgraph Workers["Workers em Background (SKIP LOCKED)"]
+    OutboxWorker["OutboxPublisherWorker (Lease em 3 Fases)"]
+    PendingWorker["PendingReferenceWorker (TTL 5m)"]
+  end
+
+  HTTP --> Controllers
+  SQSIn --> SQSConsumer
+  SQSIn -.->|"maxReceiveCount=5"| SQSDLQ
+  Controllers --> UseCases
+  SQSConsumer --> InboxDB
+  SQSConsumer --> UseCases
+  UseCases --> Domain
+  UseCases --> WalletsDB
+  UseCases --> TxDB
+  UseCases --> LedgerDB
+  UseCases --> OutboxDB
+  OutboxDB --> OutboxWorker
+  OutboxWorker --> SQSOut
+  TxDB --> PendingWorker
+  PendingWorker --> WalletsDB
+```
+
+---
+
+## 2. Controle de Concorrência & Escolha do ORM
 
 ### Por que MikroORM?
-O **MikroORM** foi selecionado como ORM preferencial devido ao seu padrão de **Unit of Work** e **Identity Map** explícitos. Diferente de soluções ativas como Prisma ou TypeORM, o MikroORM mantém rastreamento preciso das entidades mutadas durante a transação, executando todas as operações SQL em lote atômico (`em.transactional()`), prevenindo side-effects parciais.
+O **MikroORM 6.4** fornece **Unit of Work** e **Identity Map** explícitos por escopo de requisição/transação. Todas as mutações de entidades dentro de `em.transactional(...)` são rastreadas e persistidas atomicamente em uma única transação SQL, evitando efeitos colaterais parciais entre `wallets`, `wager_transactions`, `wallet_ledger_entries` e `outbox_messages`.
 
-### Concorrência com Pessimistic Locking
-A unidade de concorrência é a **`walletId`**. Para suportar concorrência extrema (ex.: 50 apostas simultâneas ou disputa entre 3+ instâncias):
-1. Cada operação financeira executa:
+### Locking Pessimista por Carteira (`PESSIMISTIC_WRITE`)
+A unidade de concorrência é o `walletId`. Para garantir zero divergência de saldo sob requisições simultâneas entre múltiplas instâncias da aplicação:
+
+1. Toda transação que altera saldo define um timeout local limitado antes de adquirir o lock da linha:
    ```sql
+   SET LOCAL lock_timeout = '5000ms';
    SELECT * FROM wallets WHERE id = $1 FOR UPDATE;
    ```
-   via `em.findOne(WalletOrmEntity, { id }, { lockMode: LockMode.PESSIMISTIC_WRITE })`.
-2. Essa estratégia enfileira no nível do motor transacional do PostgreSQL todas as requisições concorrentes daquela carteira específica, sem necessidade de retry storm ou locks distribuídos globais no Redis.
-3. Wallets distintas processam em paralelo sem nenhum bloqueio cruzado.
+   Executado via `em.findOne(WalletOrmEntity, { id }, { lockMode: LockMode.PESSIMISTIC_WRITE })`.
+2. Requisições concorrentes para o **mesmo** `walletId` são serializadas de forma limpa pelo gerenciador de locks de linha do PostgreSQL, sem tempestades de retries otimistas nem locks distribuídos em Redis.
+3. Requisições para **`walletId`s distintos** executam em total paralelismo, sem contenção entre carteiras.
+4. A reconciliação somente leitura (`POST /wallets/:walletId/reconciliation`) usa `LockMode.PESSIMISTIC_READ` para calcular `SUM`/`COUNT` SQL sobre `wallet_ledger_entries` em um snapshot consistente.
 
 ---
 
-## 3. Garantias Estruturais no Schema do PostgreSQL (Seções 5, 6 e 7)
+## 3. Processamento de Apostas, Inbox & Outbox Transacional
 
-Conforme a Restrição Inviolável nº 9, a consistência não depende exclusivamente do código da aplicação, mas é reforçada estruturalmente no banco de dados:
+Para garantir entrega de eventos *at-least-once* e processamento idempotente de mensagens sem two-phase commit distribuído (2PC):
 
-1. **Unicidade de Wallet por Jogador e Moeda**:
+```mermaid
+sequenceDiagram
+  autonumber
+  participant Caller as "Cliente HTTP / SQS Consumer"
+  participant App as "ProcessWagerTransactionUseCase"
+  participant PG as "PostgreSQL 16"
+  participant Outbox as "OutboxPublisherWorker"
+  participant SQS as "SQS FIFO (wager-events.fifo)"
+
+  Caller->>App: "Submete aposta (Idempotency-Key + x-provider-id)"
+  App->>PG: "BEGIN; SET LOCAL lock_timeout = '5000ms'"
+  App->>PG: "SELECT ... FROM wallets WHERE id = $1 FOR UPDATE (PESSIMISTIC_WRITE)"
+  App->>PG: "Verifica inbox (se SQS) & idempotency_key + payloadHash SHA-256 canônico"
+  alt "Replay Idêntico"
+    PG-->>App: "Transação existente + observed_balance persistido"
+    App-->>Caller: "200 OK (idempotentReplay: true)"
+  else "Payload Divergente"
+    App-->>Caller: "409 IDEMPOTENCY_CONFLICT"
+  else "Nova Transação"
+    App->>PG: "INSERT wager_transactions + INSERT wallet_ledger_entries"
+    App->>PG: "UPDATE wallets.balance + INSERT outbox_messages"
+    App->>PG: "COMMIT"
+    App-->>Caller: "200 OK (ou SQS DeleteMessage pós-commit)"
+  end
+
+  loop "A cada OUTBOX_POLL_INTERVAL_MS"
+    Outbox->>PG: "Fase 1: SELECT ... FROM outbox_messages WHERE ... FOR UPDATE SKIP LOCKED (lease 30s)"
+    Outbox->>SQS: "Fase 2 (fora da tx): SendMessage (MessageGroupId=walletId, DeduplicationId=id)"
+    Outbox->>PG: "Fase 3: UPDATE outbox_messages SET published_at = NOW() (ou backoff em erro)"
+  end
+```
+
+### Mecânica dos Workers (`FOR UPDATE SKIP LOCKED`)
+- **`OutboxPublisherWorker` (Padrão em 3 Fases)**:
+  1. **Claim**: Dentro de uma transação curta, seleciona linhas pendentes vencidas usando `LockMode.PESSIMISTIC_PARTIAL_WRITE` (`FOR UPDATE SKIP LOCKED`) e define um lease de 30 segundos (`next_attempt_at`) para que réplicas concorrentes nunca capturem as mesmas linhas.
+  2. **Publish**: Envia o envelope `IntegrationEvent` para `wager-events.fifo` **fora** da transação de banco, evitando manter conexões abertas durante I/O de rede.
+  3. **Acknowledge / Backoff**: Marca `published_at` em caso de sucesso, ou incrementa `attempts` com backoff exponencial e incrementa `wagering_message_retries_total` em caso de falha.
+- **Padrão Inbox (`inbox_messages`)**:
+  - O `SqsConsumerService` (`consumerName = "WagerSqsConsumer"`) registra `(consumer_name, message_id)` em `inbox_messages` dentro da mesma transação de banco e executa `DeleteMessageCommand` somente **após** o commit da transação. Mensagens inválidas/venenosas que excedem `maxReceiveCount = 5` são encaminhadas pelo SQS para `wager-transactions-dlq.fifo`.
+
+---
+
+## 4. Máquina de Estados `PENDING_REFERENCE` (Fora de Ordem)
+
+Provedores podem entregar um `REFUND` ou `ROLLBACK` antes que o `BET` referenciado chegue ou conclua o commit. Em vez de falhar imediatamente ou bloquear a thread HTTP/SQS:
+
+```mermaid
+stateDiagram-v2
+  [*] --> PENDING_REFERENCE: "REFUND/ROLLBACK chega antes do BET referenciado"
+  PENDING_REFERENCE --> PROCESSED: "BET referenciado está PROCESSED -> aplica reversão e entrada no ledger"
+  PENDING_REFERENCE --> REJECTED: "BET referenciado REJECTED/FAILED, regra falha ou TTL de 5m expira (ReferenceNotFound)"
+  PROCESSED --> [*]
+  REJECTED --> [*]
+```
+
+O `PendingReferenceWorker` consulta `wager_transactions` com `status = 'PENDING_REFERENCE'` usando `FOR UPDATE SKIP LOCKED` (`LockMode.PESSIMISTIC_PARTIAL_WRITE`) e resolve cada entrada **in-place dentro de uma única transação**:
+1. Adquire o lock da linha de `wallet` primeiro (`PESSIMISTIC_WRITE`) para preservar a ordem de locks e evitar deadlocks.
+2. Consulta a transação referenciada:
+   - Se ainda não existir e estiver dentro do TTL de 5 minutos, agenda a próxima tentativa.
+   - Se a transação referenciada estiver `REJECTED` ou `FAILED`, rejeita rapidamente a reversão pendente como `REJECTED`.
+   - Se a transação referenciada estiver `PROCESSED`, aplica a reversão de saldo, grava a entrada imutável no ledger e enfileira o `IntegrationEvent` em `outbox_messages`.
+   - Se o TTL de 5 minutos tiver expirado, chama `rejectInPlace(...)` para transicionar a transação para `REJECTED` (`FailureCode.ReferenceNotFound`).
+
+---
+
+## 5. Garantias Estruturais no PostgreSQL
+
+A integridade financeira é garantida diretamente no schema (`src/infrastructure/database/migrations/Migration20261015000000_InitialSchema.ts`), independente de bugs na aplicação:
+
+1. **Uma Carteira por Jogador e Moeda**:
    ```sql
-   CONSTRAINT uq_wallet_player_currency UNIQUE (player_id, currency)
+   CONSTRAINT "uq_wallet_player_currency" UNIQUE ("player_id", "currency")
    ```
-2. **Saldo Não-Negativo no Banco**:
+2. **Saldo de Carteira Não Negativo**:
    ```sql
-   CONSTRAINT chk_wallet_balance_non_negative CHECK (balance >= 0)
+   CONSTRAINT "chk_wallet_balance_non_negative" CHECK ("balance" >= 0)
    ```
-3. **Unicidade de Lançamento no Ledger**:
+3. **Unicidade do Ledger & Matemática de Partida Dobrada**:
    ```sql
-   CONSTRAINT uq_ledger_wallet_transaction UNIQUE (wallet_id, transaction_id)
+   CONSTRAINT "uq_ledger_wallet_transaction" UNIQUE ("wallet_id", "transaction_id"),
+   CONSTRAINT "chk_ledger_direction_valid" CHECK ("direction" IN ('DEBIT', 'CREDIT')),
+   CONSTRAINT "chk_ledger_amounts_positive" CHECK ("amount" >= 0 AND "balance_before" >= 0 AND "balance_after" >= 0),
+   CONSTRAINT "chk_ledger_math" CHECK (
+     ("direction" = 'DEBIT' AND "balance_before" - "amount" = "balance_after") OR
+     ("direction" = 'CREDIT' AND "balance_before" + "amount" = "balance_after")
+   )
    ```
-4. **Trigger de Imutabilidade Estrita do Ledger**:
-   Para cumprir a proibição de update ou delete em registros contábeis:
+4. **Trigger de Imutabilidade do Ledger**:
    ```sql
    CREATE OR REPLACE FUNCTION fn_prevent_ledger_modification()
    RETURNS TRIGGER AS $$
@@ -69,81 +183,54 @@ Conforme a Restrição Inviolável nº 9, a consistência não depende exclusiva
    $$ LANGUAGE plpgsql;
 
    CREATE TRIGGER trg_prevent_ledger_update_or_delete
-   BEFORE UPDATE OR DELETE ON wallet_ledger_entries
-   FOR EACH ROW EXECUTE FUNCTION fn_prevent_ledger_modification();
+   BEFORE UPDATE OR DELETE ON "wallet_ledger_entries"
+   FOR EACH ROW
+   EXECUTE FUNCTION fn_prevent_ledger_modification();
    ```
-5. **Prevenção de Dupla Reversão via Índice Único Parcial**:
+5. **Prevenção de Dupla Reversão (Índice Único Parcial)**:
    ```sql
-   CREATE UNIQUE INDEX idx_unique_reversal ON wager_transactions (reference_transaction_id, kind)
-   WHERE status = 'PROCESSED' AND kind IN ('REFUND', 'ROLLBACK');
-   ```
-6. **Integridade Matemática do Ledger (Partida Balanceada)**:
-   ```sql
-   CONSTRAINT chk_ledger_math CHECK (
-     (direction = 'DEBIT' AND balance_before - amount = balance_after) OR
-     (direction = 'CREDIT' AND balance_before + amount = balance_after)
-   )
+   CREATE UNIQUE INDEX "idx_unique_reversal"
+   ON "wager_transactions" ("reference_transaction_id", "kind")
+   WHERE "status" = 'PROCESSED' AND "kind" IN ('REFUND', 'ROLLBACK');
    ```
 
 ---
 
-## 4. Precisão Monetária — Value Object `Money`
+## 6. Precisão Monetária & Idempotência Canônica
 
-Dinheiro é representado exclusivamente pelo Value Object imutável `Money`, respaldado internamente pela biblioteca de precisão decimal arbitrária `decimal.js`:
-- Escala fixa de 2 casas decimais (`"25.00"`).
-- Tipos `number`, `float` ou `double` são estritamente proibidos.
-- Entradas inválidas (`NaN`, `Infinity`, strings vazias, valores negativos na entrada) são rejeitadas na camada de domínio.
-- Operações entre moedas distintas lançam `CurrencyMismatchError`.
+### Value Object `Money`
+- Baseado em `decimal.js` configurado com **precisão 28** e **`ROUND_HALF_UP`**.
+- Impõe no máximo **2 casas decimais** e rejeita `NaN`, `Infinity`, strings vazias e notação científica na construção. `Money.from()` aceita strings numéricas com sinal (para suportar representação de delta/aritmética), enquanto `Wallet` (`open`, `debit`, `credit`) rejeita valores negativos com `InsufficientFundsError`.
+- Operações entre moedas diferentes lançam `CurrencyMismatchError`.
 
----
-
-## 5. Idempotência e Saldo Observado Fiel
-
-O sistema utiliza o header `Idempotency-Key` (formato canônico `{providerId}:{externalTransactionId}`) como fonte da verdade:
-1. **Hash Canônico**: Calcula SHA-256 sobre a representação canônica ordenada lexicograficamente dos atributos de negócio.
-2. **Detecção de Conflito**: Mesma chave com hash divergente gera HTTP 409 Conflict (`IdempotencyConflictError`).
-3. **Replay Fiel com Saldo Observado (Regra 7, Seção 7)**:
-   - A transação persiste no banco o campo `observed_balance` correspondente ao momento exato em que foi aplicada ou rejeitada.
-   - Em caso de replay idêntico, o endpoint retorna o `observed_balance` histórico persistido, garantindo que apostas posteriores feitas na carteira não alterem a resposta do replay.
+### `payloadHash` SHA-256 Canônico & Replay Fiel
+- `Idempotency-Key` assume `${providerId}:${externalTransactionId}` por padrão quando omitido.
+- Um digest SHA-256 é calculado sobre a representação JSON canônica (chaves ordenadas recursivamente) do payload de negócio.
+- **Mesma chave + mesmo hash**: Retorna `200 OK` com `idempotentReplay: true` e o `observed_balance` persistido no exato momento em que a transação original foi concluída — movimentações posteriores na carteira nunca alteram replays históricos.
+- **Mesma chave + hash divergente**: Retorna `409 Conflict` (`IDEMPOTENCY_CONFLICT`).
 
 ---
 
-## 6. Mensageria, Inbox & Transactional Outbox Pattern
+## 7. Autenticação & Extensão de Identidade do Provedor
 
-Para garantir entrega *at-least-once* e tolerância a falhas sem perda nem duplicação de eventos:
-- **Inbox Pattern**: Mensagens do SQS são salvas na tabela `inbox_messages` com chave `(consumer_name, message_id)`. Se uma mensagem for reenviada pelo SQS, a chave impede reprocessamento.
-- **Transactional Outbox**: Na mesma transação SQL que altera o saldo e grava o ledger, o evento é enfileirado na tabela `outbox_messages`.
-- **Worker com `SKIP LOCKED`**: O `OutboxPublisherWorker` consulta mensagens pendentes usando:
-  ```sql
-  SELECT * FROM outbox_messages WHERE published_at IS NULL FOR UPDATE SKIP LOCKED
-  ```
-  Isso permite que **múltiplas instâncias** da aplicação publiquem eventos concorrentemente sem colisões ou locks mútuos.
-- **Ack Pós-Commit**: O consumidor SQS apenas executa `DeleteMessageCommand` após a transação SQL ter sido confirmada no PostgreSQL.
-- **Referências Fora de Ordem (`PENDING_REFERENCE`)**: Se um `REFUND` ou `ROLLBACK` chegar antes da sua `BET`, ele é gravado em status `PENDING_REFERENCE` e reprocessado pelo `PendingReferenceWorker` até que a transação original seja confirmada ou o TTL expire.
+A camada HTTP aplica validação de identidade do provedor via `AuthGuard` (`src/presentation/guards/auth.guard.ts`) e checagens nos controllers:
+- Na configuração local/demo, o `AuthGuard` ignora as rotas `/health`, `/metrics` e `/docs*`, lê o header `x-provider-id` (padrão `"provider-a"`) e anexa `request.providerIdentity = { providerId, authenticated: true }`.
+- O `WageringController` garante que `request.providerIdentity.providerId` corresponda a `body.providerId` ou `:providerId` (retornando `403 Forbidden` em caso de divergência).
+- Em produção, o `AuthGuard` foi projetado para integrar com um Identity Provider OIDC externo (ex.: **Keycloak** ou **Zitadel**) usando OAuth2 Client Credentials (`client_id` + `client_secret`), validando assinaturas JWT contra JWKS em cache (`/.well-known/jwks.json`) e preenchendo `request.providerIdentity` a partir das claims assinadas do token.
 
 ---
 
-## 7. Desenho de Autenticação — Identity Provider Externo (OIDC/Keycloak)
+## 8. Observabilidade & Sanitização de Logs
 
-Conforme as diretrizes da Seção 2 do desafio (onde a autenticação não pontua na avaliação técnica), a aplicação fornece um ponto de extensão explícito `AuthGuard` e `ProviderIdentityPort`.
-
-### Arquitetura de Produção Recomendada:
-1. **IdP**: **Keycloak** ou **Zitadel** rodando em container OIDC.
-2. **Provedores de Jogos**: Cada provedor autentica via OAuth2 Client Credentials Flow (`client_id` + `client_secret`) obtendo um JWT assinado.
-3. **Jogadores**: End-users autenticam via Authorization Code Flow com PKCE.
-4. **Validação no Wagering Processor**: O `AuthGuard` valida o JWT contra os endpoints JWKS (`/.well-known/jwks.json`) do Keycloak com cache de chaves públicas, extraindo o `provider_id` diretamente dos claims do token (ex.: `sub` ou `azp`).
-5. **Mensageria**: Mensagens do SQS são tratadas como canal interno confiável com mTLS e IAM roles, mas o payload é submetido às mesmas validações de domínio.
-
----
-
-## 8. Observabilidade e Segurança de Logs (Seção 12)
-
-- **Logs Estruturados**: Implementados via **Pino**, com formatação JSON e injeção padronizada de `correlationId`, `transactionId`, `walletId`, `providerId`.
-- **Sanitização Financeira**: Conforme a regra de ouro do README, nenhum payload financeiro completo, senhas, chaves de API ou dados de cartão são logados.
-- **Métricas Prometheus (`/metrics`)**:
-  - `wagering_transactions_total` (por status, kind e provider)
-  - `wagering_duplicate_transactions_total` (replays idempotentes)
-  - `wagering_outbox_lag_messages` (lag da outbox)
-  - `wagering_transaction_duration_seconds` (histograma de latência)
+- **Logs Estruturados (Pino)**: Logs em JSON incluem `correlationId` (propagado pelo `CorrelationIdMiddleware` via `X-Correlation-Id`), `transactionId`, `walletId` e `providerId`. Credenciais sensíveis e payloads financeiros completos nunca são logados.
+- **Health Checks**:
+  - `GET /health/live`: Probe leve de liveness do processo (`{ status: "UP", timestamp }`).
+  - `GET /health/ready`: Probe ativo de readiness executando `SELECT 1` no PostgreSQL e `ListQueuesCommand` no SQS (`200` ou `503`).
+- **Métricas Prometheus (`GET /metrics`)**:
+  - `wagering_transactions_total` (`kind`, `status`, `provider_id`)
+  - `wagering_duplicate_transactions_total` (`provider_id`)
+  - `wagering_message_retries_total` (`worker_name`)
+  - `wagering_dlq_messages_total`
   - `wagering_lock_conflicts_total`
-- **Health Checks**: `/health/live` (liveness) e `/health/ready` (readiness checando conectividade ativa com PostgreSQL e SQS).
+  - `wagering_outbox_lag_messages`
+  - `wagering_transaction_duration_seconds` (`kind`, `status`; buckets `[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5]`)

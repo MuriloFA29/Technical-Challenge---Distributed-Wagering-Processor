@@ -1,36 +1,38 @@
 import { EntityManager, LockMode } from "@mikro-orm/postgresql";
+import { Optional } from "@nestjs/common";
 import { v7 as uuidv7 } from "uuid";
-import { Money, MoneyProps } from "../../domain/value-objects/money";
-import { Wallet } from "../../domain/entities/wallet";
+import { OutboxMessage } from "../../domain/entities/outbox-message";
 import {
   FailureCode,
   WagerTransaction,
   WagerTransactionKind,
   WagerTransactionStatus,
 } from "../../domain/entities/wager-transaction";
+import { Wallet } from "../../domain/entities/wallet";
+import { LedgerDirection, WalletLedgerEntry } from "../../domain/entities/wallet-ledger-entry";
+import { InvalidMoneyError } from "../../domain/errors/domain-errors";
 import {
-  LedgerDirection,
-  WalletLedgerEntry,
-} from "../../domain/entities/wallet-ledger-entry";
-import {
-  WalletBalanceChanged,
+  IntegrationEvent,
   WagerTransactionPendingReference,
   WagerTransactionProcessed,
   WagerTransactionRejected,
+  WalletBalanceChanged,
 } from "../../domain/events/integration-event";
-import { OutboxMessage } from "../../domain/entities/outbox-message";
+import { Money, MoneyProps } from "../../domain/value-objects/money";
+import {
+  InboxMessageOrmEntity,
+  OutboxMessageOrmEntity,
+  WagerTransactionOrmEntity,
+  WalletLedgerEntryOrmEntity,
+  WalletOrmEntity,
+} from "../../infrastructure/database/entities";
+import { MetricsService } from "../../infrastructure/observability/metrics.service";
 import {
   IdempotencyConflictError,
+  InvalidTransactionKindError,
   WalletNotFoundError,
 } from "../errors/application-errors";
 import { computeCanonicalPayloadHash } from "../utils/canonical-json";
-import {
-  WalletOrmEntity,
-  WagerTransactionOrmEntity,
-  WalletLedgerEntryOrmEntity,
-  InboxMessageOrmEntity,
-  OutboxMessageOrmEntity,
-} from "../../infrastructure/database/entities";
 
 export interface ProcessWagerTransactionCommand {
   providerId: string;
@@ -58,15 +60,25 @@ export interface ProcessWagerTransactionResult {
 }
 
 export class ProcessWagerTransactionUseCase {
-  constructor(private readonly em: EntityManager) { }
+  constructor(
+    private readonly em: EntityManager,
+    @Optional() private readonly metricsService?: MetricsService
+  ) {}
 
   async execute(command: ProcessWagerTransactionCommand): Promise<ProcessWagerTransactionResult> {
+    const startNs = process.hrtime.bigint();
+
     // 0. Bloqueio estrito de OPENING submetido externamente
     if (command.kind === WagerTransactionKind.Opening) {
-      throw new Error("OPENING transaction kind is internal and cannot be submitted via API or messaging.");
+      this.observeDuration(command.kind, "ERROR", startNs);
+      throw new InvalidTransactionKindError(command.kind);
     }
 
     const inputMoney = Money.from(command.money);
+    if (inputMoney.isNegative()) {
+      this.observeDuration(command.kind, "ERROR", startNs);
+      throw new InvalidMoneyError("Transaction amount cannot be negative");
+    }
 
     // 1. Calcular o payloadHash canônico a partir dos dados de negócio
     const canonicalBusinessPayload = {
@@ -85,462 +97,529 @@ export class ProcessWagerTransactionUseCase {
     };
     const payloadHash = computeCanonicalPayloadHash(canonicalBusinessPayload);
 
-    return await this.em.transactional(async (txEm) => {
-      // 2. Bloqueio pessimista por walletId PRIMEIRO (unidade fundamental de concorrência)
-      const walletOrm = await txEm.findOne(
-        WalletOrmEntity,
-        { id: command.walletId },
-        { lockMode: LockMode.PESSIMISTIC_WRITE }
-      );
+    try {
+      return await this.em.transactional(async (txEm) => {
+        if (typeof txEm.getConnection === "function") {
+          await txEm.getConnection().execute("SET LOCAL lock_timeout = '5000ms'");
+        }
 
-      if (!walletOrm) {
-        throw new WalletNotFoundError(command.walletId);
-      }
+        // 2. Bloqueio pessimista por walletId PRIMEIRO (unidade fundamental de concorrência)
+        const walletOrm = await txEm.findOne(
+          WalletOrmEntity,
+          { id: command.walletId },
+          { lockMode: LockMode.PESSIMISTIC_WRITE }
+        );
 
-      // 3. Tratar Inbox se veio de fila SQS (Deduplicação de mensagens)
-      if (command.inboxContext) {
-        const existingInbox = await txEm.findOne(InboxMessageOrmEntity, {
-          consumerName: command.inboxContext.consumerName,
-          messageId: command.inboxContext.messageId,
-        });
+        if (!walletOrm) {
+          throw new WalletNotFoundError(command.walletId);
+        }
 
-        if (existingInbox && existingInbox.processedAt) {
-          const existingTx = await txEm.findOne(WagerTransactionOrmEntity, {
-            providerId: command.providerId,
-            idempotencyKey: command.idempotencyKey,
+        // 3. Tratar Inbox se veio de fila SQS (Deduplicação de mensagens)
+        if (command.inboxContext) {
+          const existingInbox = await txEm.findOne(InboxMessageOrmEntity, {
+            consumerName: command.inboxContext.consumerName,
+            messageId: command.inboxContext.messageId,
           });
 
-          if (existingTx) {
-            return {
-              transactionId: existingTx.id,
-              status: existingTx.status,
-              balance: {
-                amount: existingTx.observedBalance ?? walletOrm.balance,
-                currency: existingTx.observedBalanceCurrency ?? inputMoney.currency,
-              },
-              idempotentReplay: true,
-              failureCode: existingTx.failureCode,
-            };
+          if (existingInbox?.processedAt) {
+            const existingTx = await txEm.findOne(WagerTransactionOrmEntity, {
+              providerId: command.providerId,
+              idempotencyKey: command.idempotencyKey,
+            });
+
+            if (existingTx) {
+              this.metricsService?.duplicateTransactionsTotal.inc({
+                provider_id: command.providerId,
+              });
+              this.observeDuration(command.kind, existingTx.status, startNs);
+
+              return {
+                transactionId: existingTx.id,
+                status: existingTx.status,
+                balance: {
+                  amount: existingTx.observedBalance ?? walletOrm.balance,
+                  currency: existingTx.observedBalanceCurrency ?? inputMoney.currency,
+                },
+                idempotentReplay: true,
+                failureCode: existingTx.failureCode,
+              };
+            }
+          }
+
+          if (!existingInbox) {
+            const inboxEntry = txEm.create(InboxMessageOrmEntity, {
+              messageId: command.inboxContext.messageId,
+              consumerName: command.inboxContext.consumerName,
+              payloadHash,
+              receivedAt: new Date(),
+              processedAt: new Date(),
+            });
+            txEm.persist(inboxEntry);
+          } else {
+            existingInbox.processedAt = new Date();
           }
         }
 
-        if (!existingInbox) {
-          const inboxEntry = txEm.create(InboxMessageOrmEntity, {
-            messageId: command.inboxContext.messageId,
-            consumerName: command.inboxContext.consumerName,
-            payloadHash,
-            receivedAt: new Date(),
-            processedAt: new Date(),
-          });
-          txEm.persist(inboxEntry);
-        } else {
-          existingInbox.processedAt = new Date();
-        }
-      }
-
-      // 4. Checar idempotência no banco por (providerId, idempotencyKey) sob o lock da wallet
-      const existingTx = await txEm.findOne(WagerTransactionOrmEntity, {
-        providerId: command.providerId,
-        idempotencyKey: command.idempotencyKey,
-      });
-
-      if (existingTx) {
-        if (existingTx.payloadHash !== payloadHash) {
-          throw new IdempotencyConflictError(command.idempotencyKey);
-        }
-
-        // Replay idêntico: Retorna EXATAMENTE o saldo observado naquele momento (Regra 7, Seção 7)
-        return {
-          transactionId: existingTx.id,
-          status: existingTx.status,
-          balance: {
-            amount: existingTx.observedBalance ?? walletOrm.balance,
-            currency: existingTx.observedBalanceCurrency ?? inputMoney.currency,
-          },
-          idempotentReplay: true,
-          failureCode: existingTx.failureCode,
-        };
-      }
-
-      const wallet = Wallet.rehydrate({
-        id: walletOrm.id,
-        playerId: walletOrm.playerId,
-        currency: walletOrm.currency,
-        balance: Money.from({ amount: walletOrm.balance, currency: walletOrm.currency }),
-        version: walletOrm.version,
-        createdAt: walletOrm.createdAt,
-        updatedAt: walletOrm.updatedAt,
-      });
-
-      // Validação de moeda
-      if (inputMoney.currency !== wallet.currency) {
-        return this.recordRejection(
-          txEm,
-          command,
-          payloadHash,
-          wallet,
-          inputMoney,
-          FailureCode.CurrencyMismatch,
-          wallet.balance
-        );
-      }
-
-      // Validação de jogador
-      if (command.playerId !== wallet.playerId) {
-        return this.recordRejection(
-          txEm,
-          command,
-          payloadHash,
-          wallet,
-          inputMoney,
-          FailureCode.InvalidPayload,
-          wallet.balance
-        );
-      }
-
-      // 5. Instanciar entidade de transação de domínio
-      const transactionId = uuidv7();
-      const wagerTx = WagerTransaction.create({
-        id: transactionId,
-        providerId: command.providerId,
-        externalTransactionId: command.externalTransactionId,
-        idempotencyKey: command.idempotencyKey,
-        payloadHash,
-        walletId: command.walletId,
-        playerId: command.playerId,
-        roundId: command.roundId,
-        gameId: command.gameId,
-        kind: command.kind,
-        money: inputMoney,
-        referenceExternalTransactionId: command.referenceExternalTransactionId,
-      });
-
-      // 6. Resolução de referências (REFUND, ROLLBACK)
-      let referenceOrm: WagerTransactionOrmEntity | null = null;
-      if (wagerTx.requiresReference()) {
-        referenceOrm = await txEm.findOne(WagerTransactionOrmEntity, {
+        // 4. Checar idempotência no banco por (providerId, idempotencyKey) sob o lock da wallet
+        const existingTx = await txEm.findOne(WagerTransactionOrmEntity, {
           providerId: command.providerId,
-          externalTransactionId: command.referenceExternalTransactionId!,
+          idempotencyKey: command.idempotencyKey,
         });
 
-        if (!referenceOrm || referenceOrm.status !== WagerTransactionStatus.Processed) {
-          // Referência não existe ou ainda não foi processada -> PENDING_REFERENCE
-          wagerTx.markPendingReference();
+        if (existingTx) {
+          if (existingTx.payloadHash !== payloadHash) {
+            this.metricsService?.lockConflictsTotal.inc();
+            this.observeDuration(command.kind, "CONFLICT", startNs);
+            throw new IdempotencyConflictError(command.idempotencyKey);
+          }
 
-          const txOrm = txEm.create(WagerTransactionOrmEntity, {
-            id: wagerTx.id,
-            providerId: wagerTx.providerId,
-            externalTransactionId: wagerTx.externalTransactionId,
-            idempotencyKey: wagerTx.idempotencyKey,
-            payloadHash: wagerTx.payloadHash,
-            walletId: wagerTx.walletId,
-            playerId: wagerTx.playerId,
-            roundId: wagerTx.roundId,
-            gameId: wagerTx.gameId,
-            kind: wagerTx.kind,
-            amount: wagerTx.money.amount,
-            currency: wagerTx.money.currency,
-            referenceExternalTransactionId: wagerTx.referenceExternalTransactionId,
-            status: wagerTx.status,
-            observedBalance: wallet.balance.amount,
-            observedBalanceCurrency: wallet.balance.currency,
-            createdAt: wagerTx.createdAt,
+          this.metricsService?.duplicateTransactionsTotal.inc({
+            provider_id: command.providerId,
           });
-          txEm.persist(txOrm);
+          this.observeDuration(command.kind, existingTx.status, startNs);
 
-          // Evento de integração
-          const pendingRefEvent = new WagerTransactionPendingReference({
-            eventId: uuidv7(),
-            aggregateId: wallet.id,
-            correlationId: wagerTx.idempotencyKey,
-            occurredAt: wagerTx.createdAt,
-            data: {
-              transactionId: wagerTx.id,
-              providerId: wagerTx.providerId,
-              externalTransactionId: wagerTx.externalTransactionId,
-              referenceExternalTransactionId: command.referenceExternalTransactionId!,
-              walletId: wallet.id,
-              playerId: wallet.playerId,
-              roundId: wagerTx.roundId,
-              gameId: wagerTx.gameId,
-              kind: wagerTx.kind,
-              money: inputMoney.toJSON(),
-            },
-          });
-
-          this.enqueueOutbox(txEm, pendingRefEvent);
-          await txEm.flush();
-
+          // Replay idêntico: Retorna EXATAMENTE o saldo observado naquele momento (Regra 7, Seção 7)
           return {
-            transactionId: wagerTx.id,
-            status: wagerTx.status,
-            balance: wallet.balance.toJSON(),
-            idempotentReplay: false,
+            transactionId: existingTx.id,
+            status: existingTx.status,
+            balance: {
+              amount: existingTx.observedBalance ?? walletOrm.balance,
+              currency: existingTx.observedBalanceCurrency ?? inputMoney.currency,
+            },
+            idempotentReplay: true,
+            failureCode: existingTx.failureCode,
           };
         }
 
-        // Validação cruzada estrita da referência (Regra 2, Seção 7)
-        if (
-          referenceOrm.providerId !== command.providerId ||
-          referenceOrm.playerId !== command.playerId ||
-          referenceOrm.walletId !== command.walletId ||
-          referenceOrm.currency !== inputMoney.currency ||
-          referenceOrm.roundId !== command.roundId
-        ) {
-          return this.recordRejection(
-            txEm,
-            command,
-            payloadHash,
-            wallet,
-            inputMoney,
-            FailureCode.ReferenceMismatch,
-            wallet.balance
-          );
-        }
-
-        // Validação de valor idêntico (Regra 5, Seção 7)
-        if (referenceOrm.amount !== inputMoney.amount) {
-          return this.recordRejection(
-            txEm,
-            command,
-            payloadHash,
-            wallet,
-            inputMoney,
-            FailureCode.ReferenceMismatch,
-            wallet.balance
-          );
-        }
-
-        // Matriz de tipos permitidos na referência (Regra 3, Seção 7)
-        if (command.kind === WagerTransactionKind.Refund) {
-          if (referenceOrm.kind !== WagerTransactionKind.Bet) {
-            return this.recordRejection(
-              txEm,
-              command,
-              payloadHash,
-              wallet,
-              inputMoney,
-              FailureCode.InvalidReferenceType,
-              wallet.balance
-            );
-          }
-        } else if (command.kind === WagerTransactionKind.Rollback) {
-          const allowedForRollback = [
-            WagerTransactionKind.Bet,
-            WagerTransactionKind.Win,
-            WagerTransactionKind.Refund,
-          ];
-          if (!allowedForRollback.includes(referenceOrm.kind)) {
-            return this.recordRejection(
-              txEm,
-              command,
-              payloadHash,
-              wallet,
-              inputMoney,
-              FailureCode.InvalidReferenceType,
-              wallet.balance
-            );
-          }
-        }
-
-        // Prevenção de dupla reversão pelo mesmo tipo (Regra 4, Seção 7)
-        const existingReversal = await txEm.findOne(WagerTransactionOrmEntity, {
-          referenceTransactionId: referenceOrm.id,
-          kind: command.kind,
-          status: WagerTransactionStatus.Processed,
+        const wallet = Wallet.rehydrate({
+          id: walletOrm.id,
+          playerId: walletOrm.playerId,
+          currency: walletOrm.currency,
+          balance: Money.from({ amount: walletOrm.balance, currency: walletOrm.currency }),
+          version: walletOrm.version,
+          createdAt: walletOrm.createdAt,
+          updatedAt: walletOrm.updatedAt,
         });
 
-        if (existingReversal) {
+        // Validação de moeda
+        if (inputMoney.currency !== wallet.currency) {
           return this.recordRejection(
             txEm,
             command,
             payloadHash,
             wallet,
             inputMoney,
-            FailureCode.DuplicateReversal,
-            wallet.balance
+            FailureCode.CurrencyMismatch,
+            wallet.balance,
+            startNs
           );
         }
-      }
 
-      // 7. Processar movimentação financeira por Kind
-      let balanceBefore = wallet.balance;
-      let balanceAfter = wallet.balance;
-      let direction: LedgerDirection | null = null;
+        // Validação de jogador
+        if (command.playerId !== wallet.playerId) {
+          return this.recordRejection(
+            txEm,
+            command,
+            payloadHash,
+            wallet,
+            inputMoney,
+            FailureCode.InvalidPayload,
+            wallet.balance,
+            startNs
+          );
+        }
 
-      try {
-        if (command.kind === WagerTransactionKind.Bet) {
-          direction = LedgerDirection.Debit;
-          const movement = wallet.debit(inputMoney);
-          balanceBefore = movement.balanceBefore;
-          balanceAfter = movement.balanceAfter;
-        } else if (command.kind === WagerTransactionKind.Win) {
-          direction = LedgerDirection.Credit;
-          const movement = wallet.credit(inputMoney);
-          balanceBefore = movement.balanceBefore;
-          balanceAfter = movement.balanceAfter;
-        } else if (command.kind === WagerTransactionKind.Loss) {
-          // LOSS não move saldo, não altera version e não gera ledger
-          direction = null;
-        } else if (command.kind === WagerTransactionKind.Refund) {
-          // REFUND reverte BET -> gera crédito
-          direction = LedgerDirection.Credit;
-          const movement = wallet.credit(inputMoney);
-          balanceBefore = movement.balanceBefore;
-          balanceAfter = movement.balanceAfter;
-        } else if (command.kind === WagerTransactionKind.Rollback) {
-          // ROLLBACK inverte a operação referenciada
-          const isRefCredit =
-            referenceOrm?.kind === WagerTransactionKind.Win ||
-            referenceOrm?.kind === WagerTransactionKind.Opening ||
-            referenceOrm?.kind === WagerTransactionKind.Refund;
+        // 5. Instanciar entidade de transação de domínio
+        const transactionId = uuidv7();
+        const wagerTx = WagerTransaction.create({
+          id: transactionId,
+          providerId: command.providerId,
+          externalTransactionId: command.externalTransactionId,
+          idempotencyKey: command.idempotencyKey,
+          payloadHash,
+          walletId: command.walletId,
+          playerId: command.playerId,
+          roundId: command.roundId,
+          gameId: command.gameId,
+          kind: command.kind,
+          money: inputMoney,
+          referenceExternalTransactionId: command.referenceExternalTransactionId,
+        });
 
-          if (isRefCredit) {
-            // Reverter crédito exige débito do saldo
-            direction = LedgerDirection.Debit;
-            if (wallet.balance.isLessThan(inputMoney)) {
+        // 6. Resolução de referências (REFUND, ROLLBACK)
+        let referenceOrm: WagerTransactionOrmEntity | null = null;
+        if (wagerTx.requiresReference()) {
+          const referenceExternalTransactionId = command.referenceExternalTransactionId ?? "";
+          referenceOrm = await txEm.findOne(WagerTransactionOrmEntity, {
+            providerId: command.providerId,
+            externalTransactionId: referenceExternalTransactionId,
+          });
+
+          if (
+            referenceOrm &&
+            (referenceOrm.status === WagerTransactionStatus.Rejected ||
+              referenceOrm.status === WagerTransactionStatus.Failed)
+          ) {
+            return this.recordRejection(
+              txEm,
+              command,
+              payloadHash,
+              wallet,
+              inputMoney,
+              FailureCode.ReferenceNotFound,
+              wallet.balance,
+              startNs
+            );
+          }
+
+          if (!referenceOrm || referenceOrm.status !== WagerTransactionStatus.Processed) {
+            // Referência não existe ou ainda não foi processada -> PENDING_REFERENCE
+            wagerTx.markPendingReference();
+
+            const txOrm = txEm.create(WagerTransactionOrmEntity, {
+              id: wagerTx.id,
+              providerId: wagerTx.providerId,
+              externalTransactionId: wagerTx.externalTransactionId,
+              idempotencyKey: wagerTx.idempotencyKey,
+              payloadHash: wagerTx.payloadHash,
+              walletId: wagerTx.walletId,
+              playerId: wagerTx.playerId,
+              roundId: wagerTx.roundId,
+              gameId: wagerTx.gameId,
+              kind: wagerTx.kind,
+              amount: wagerTx.money.amount,
+              currency: wagerTx.money.currency,
+              referenceExternalTransactionId: wagerTx.referenceExternalTransactionId,
+              status: wagerTx.status,
+              observedBalance: wallet.balance.amount,
+              observedBalanceCurrency: wallet.balance.currency,
+              createdAt: wagerTx.createdAt,
+            });
+            txEm.persist(txOrm);
+
+            // Evento de integração
+            const pendingRefEvent = new WagerTransactionPendingReference({
+              eventId: uuidv7(),
+              aggregateId: wallet.id,
+              correlationId: wagerTx.idempotencyKey,
+              occurredAt: wagerTx.createdAt,
+              data: {
+                transactionId: wagerTx.id,
+                providerId: wagerTx.providerId,
+                externalTransactionId: wagerTx.externalTransactionId,
+                referenceExternalTransactionId,
+                walletId: wallet.id,
+                playerId: wallet.playerId,
+                roundId: wagerTx.roundId,
+                gameId: wagerTx.gameId,
+                kind: wagerTx.kind,
+                money: inputMoney.toJSON(),
+              },
+            });
+
+            this.enqueueOutbox(txEm, pendingRefEvent);
+            await txEm.flush();
+
+            this.metricsService?.transactionsTotal.inc({
+              kind: command.kind,
+              status: WagerTransactionStatus.PendingReference,
+              provider_id: command.providerId,
+            });
+            this.observeDuration(command.kind, WagerTransactionStatus.PendingReference, startNs);
+
+            return {
+              transactionId: wagerTx.id,
+              status: wagerTx.status,
+              balance: wallet.balance.toJSON(),
+              idempotentReplay: false,
+            };
+          }
+
+          // Validação cruzada estrita da referência (Regra 2, Seção 7)
+          if (
+            referenceOrm.providerId !== command.providerId ||
+            referenceOrm.playerId !== command.playerId ||
+            referenceOrm.walletId !== command.walletId ||
+            referenceOrm.currency !== inputMoney.currency ||
+            referenceOrm.roundId !== command.roundId
+          ) {
+            return this.recordRejection(
+              txEm,
+              command,
+              payloadHash,
+              wallet,
+              inputMoney,
+              FailureCode.ReferenceMismatch,
+              wallet.balance,
+              startNs
+            );
+          }
+
+          // Validação de valor idêntico (Regra 5, Seção 7)
+          if (referenceOrm.amount !== inputMoney.amount) {
+            return this.recordRejection(
+              txEm,
+              command,
+              payloadHash,
+              wallet,
+              inputMoney,
+              FailureCode.ReferenceMismatch,
+              wallet.balance,
+              startNs
+            );
+          }
+
+          // Matriz de tipos permitidos na referência (Regra 3, Seção 7)
+          if (command.kind === WagerTransactionKind.Refund) {
+            if (referenceOrm.kind !== WagerTransactionKind.Bet) {
               return this.recordRejection(
                 txEm,
                 command,
                 payloadHash,
                 wallet,
                 inputMoney,
-                FailureCode.ReversalInsufficientFunds,
-                wallet.balance
+                FailureCode.InvalidReferenceType,
+                wallet.balance,
+                startNs
               );
             }
+          } else if (command.kind === WagerTransactionKind.Rollback) {
+            const allowedForRollback = [
+              WagerTransactionKind.Bet,
+              WagerTransactionKind.Win,
+              WagerTransactionKind.Refund,
+            ];
+            if (!allowedForRollback.includes(referenceOrm.kind)) {
+              return this.recordRejection(
+                txEm,
+                command,
+                payloadHash,
+                wallet,
+                inputMoney,
+                FailureCode.InvalidReferenceType,
+                wallet.balance,
+                startNs
+              );
+            }
+          }
+
+          // Prevenção de dupla reversão pelo mesmo tipo (Regra 4, Seção 7)
+          const existingReversal = await txEm.findOne(WagerTransactionOrmEntity, {
+            referenceTransactionId: referenceOrm.id,
+            kind: command.kind,
+            status: WagerTransactionStatus.Processed,
+          });
+
+          if (existingReversal) {
+            return this.recordRejection(
+              txEm,
+              command,
+              payloadHash,
+              wallet,
+              inputMoney,
+              FailureCode.DuplicateReversal,
+              wallet.balance,
+              startNs
+            );
+          }
+        }
+
+        // 7. Processar movimentação financeira por Kind
+        let balanceBefore = wallet.balance;
+        let balanceAfter = wallet.balance;
+        let direction: LedgerDirection | null = null;
+
+        try {
+          if (command.kind === WagerTransactionKind.Bet) {
+            direction = LedgerDirection.Debit;
             const movement = wallet.debit(inputMoney);
             balanceBefore = movement.balanceBefore;
             balanceAfter = movement.balanceAfter;
-          } else {
-            // Referência era BET (débito) -> reverte com crédito
+          } else if (command.kind === WagerTransactionKind.Win) {
             direction = LedgerDirection.Credit;
             const movement = wallet.credit(inputMoney);
             balanceBefore = movement.balanceBefore;
             balanceAfter = movement.balanceAfter;
+          } else if (command.kind === WagerTransactionKind.Loss) {
+            // LOSS não move saldo, não altera version e não gera ledger
+            direction = null;
+          } else if (command.kind === WagerTransactionKind.Refund) {
+            // REFUND reverte BET -> gera crédito
+            direction = LedgerDirection.Credit;
+            const movement = wallet.credit(inputMoney);
+            balanceBefore = movement.balanceBefore;
+            balanceAfter = movement.balanceAfter;
+          } else if (command.kind === WagerTransactionKind.Rollback) {
+            // ROLLBACK inverte a operação referenciada
+            const isRefCredit =
+              referenceOrm?.kind === WagerTransactionKind.Win ||
+              referenceOrm?.kind === WagerTransactionKind.Opening ||
+              referenceOrm?.kind === WagerTransactionKind.Refund;
+
+            if (isRefCredit) {
+              // Reverter crédito exige débito do saldo
+              direction = LedgerDirection.Debit;
+              if (wallet.balance.isLessThan(inputMoney)) {
+                return this.recordRejection(
+                  txEm,
+                  command,
+                  payloadHash,
+                  wallet,
+                  inputMoney,
+                  FailureCode.ReversalInsufficientFunds,
+                  wallet.balance,
+                  startNs
+                );
+              }
+              const movement = wallet.debit(inputMoney);
+              balanceBefore = movement.balanceBefore;
+              balanceAfter = movement.balanceAfter;
+            } else {
+              // Referência era BET (débito) -> reverte com crédito
+              direction = LedgerDirection.Credit;
+              const movement = wallet.credit(inputMoney);
+              balanceBefore = movement.balanceBefore;
+              balanceAfter = movement.balanceAfter;
+            }
           }
+        } catch (_error) {
+          // Exceção de saldo insuficiente ao apostar
+          return this.recordRejection(
+            txEm,
+            command,
+            payloadHash,
+            wallet,
+            inputMoney,
+            FailureCode.InsufficientFunds,
+            wallet.balance,
+            startNs
+          );
         }
-      } catch (error) {
-        // Exceção de saldo insuficiente ao apostar
-        return this.recordRejection(
-          txEm,
-          command,
-          payloadHash,
-          wallet,
-          inputMoney,
-          FailureCode.InsufficientFunds,
-          wallet.balance
-        );
-      }
 
-      // 8. Atualizar entidade WagerTransaction para PROCESSED com o observedBalance registrado
-      wagerTx.markProcessed(referenceOrm?.id, wallet.balance);
+        // 8. Atualizar entidade WagerTransaction para PROCESSED com o observedBalance registrado
+        wagerTx.markProcessed(referenceOrm?.id, wallet.balance);
 
-      const txOrm = txEm.create(WagerTransactionOrmEntity, {
-        id: wagerTx.id,
-        providerId: wagerTx.providerId,
-        externalTransactionId: wagerTx.externalTransactionId,
-        idempotencyKey: wagerTx.idempotencyKey,
-        payloadHash: wagerTx.payloadHash,
-        walletId: wagerTx.walletId,
-        playerId: wagerTx.playerId,
-        roundId: wagerTx.roundId,
-        gameId: wagerTx.gameId,
-        kind: wagerTx.kind,
-        amount: wagerTx.money.amount,
-        currency: wagerTx.money.currency,
-        referenceExternalTransactionId: wagerTx.referenceExternalTransactionId,
-        referenceTransactionId: wagerTx.referenceTransactionId,
-        status: wagerTx.status,
-        observedBalance: wallet.balance.amount,
-        observedBalanceCurrency: wallet.balance.currency,
-        createdAt: wagerTx.createdAt,
-        processedAt: wagerTx.processedAt,
-      });
-      txEm.persist(txOrm);
-
-      // 9. Atualizar a linha da Wallet no banco somente se houve alteração de saldo
-      if (direction !== null) {
-        walletOrm.balance = wallet.balance.amount;
-        walletOrm.version = wallet.version;
-        walletOrm.updatedAt = wallet.updatedAt;
-
-        // 10. Lançamento do Ledger imutável
-        const ledgerEntry = WalletLedgerEntry.create({
-          id: uuidv7(),
-          walletId: wallet.id,
-          transactionId: wagerTx.id,
-          direction,
-          money: inputMoney,
-          balanceBefore,
-          balanceAfter,
-          createdAt: wagerTx.processedAt,
+        const txOrm = txEm.create(WagerTransactionOrmEntity, {
+          id: wagerTx.id,
+          providerId: wagerTx.providerId,
+          externalTransactionId: wagerTx.externalTransactionId,
+          idempotencyKey: wagerTx.idempotencyKey,
+          payloadHash: wagerTx.payloadHash,
+          walletId: wagerTx.walletId,
+          playerId: wagerTx.playerId,
+          roundId: wagerTx.roundId,
+          gameId: wagerTx.gameId,
+          kind: wagerTx.kind,
+          amount: wagerTx.money.amount,
+          currency: wagerTx.money.currency,
+          referenceExternalTransactionId: wagerTx.referenceExternalTransactionId,
+          referenceTransactionId: wagerTx.referenceTransactionId,
+          status: wagerTx.status,
+          observedBalance: wallet.balance.amount,
+          observedBalanceCurrency: wallet.balance.currency,
+          createdAt: wagerTx.createdAt,
+          processedAt: wagerTx.processedAt,
         });
+        txEm.persist(txOrm);
 
-        const ledgerOrm = txEm.create(WalletLedgerEntryOrmEntity, {
-          id: ledgerEntry.id,
-          walletId: ledgerEntry.walletId,
-          transactionId: ledgerEntry.transactionId,
-          direction: ledgerEntry.direction,
-          amount: ledgerEntry.money.amount,
-          currency: ledgerEntry.money.currency,
-          balanceBefore: ledgerEntry.balanceBefore.amount,
-          balanceAfter: ledgerEntry.balanceAfter.amount,
-          createdAt: ledgerEntry.createdAt,
-        });
-        txEm.persist(ledgerOrm);
+        // 9. Atualizar a linha da Wallet no banco somente se houve alteração de saldo
+        if (direction !== null) {
+          walletOrm.balance = wallet.balance.amount;
+          walletOrm.version = wallet.version;
+          walletOrm.updatedAt = wallet.updatedAt;
 
-        // Outbox: WalletBalanceChanged
-        const balanceChangedEvent = new WalletBalanceChanged({
+          // 10. Lançamento do Ledger imutável
+          const ledgerEntry = WalletLedgerEntry.create({
+            id: uuidv7(),
+            walletId: wallet.id,
+            transactionId: wagerTx.id,
+            direction,
+            money: inputMoney,
+            balanceBefore,
+            balanceAfter,
+            createdAt: wagerTx.processedAt,
+          });
+
+          const ledgerOrm = txEm.create(WalletLedgerEntryOrmEntity, {
+            id: ledgerEntry.id,
+            walletId: ledgerEntry.walletId,
+            transactionId: ledgerEntry.transactionId,
+            direction: ledgerEntry.direction,
+            amount: ledgerEntry.money.amount,
+            currency: ledgerEntry.money.currency,
+            balanceBefore: ledgerEntry.balanceBefore.amount,
+            balanceAfter: ledgerEntry.balanceAfter.amount,
+            createdAt: ledgerEntry.createdAt,
+          });
+          txEm.persist(ledgerOrm);
+
+          // Outbox: WalletBalanceChanged
+          const balanceChangedEvent = new WalletBalanceChanged({
+            eventId: uuidv7(),
+            aggregateId: wallet.id,
+            correlationId: wagerTx.idempotencyKey,
+            occurredAt: wagerTx.processedAt,
+            data: {
+              walletId: wallet.id,
+              transactionId: wagerTx.id,
+              direction,
+              money: inputMoney.toJSON(),
+              balanceBefore: balanceBefore.toJSON(),
+              balanceAfter: balanceAfter.toJSON(),
+              walletVersion: wallet.version,
+            },
+          });
+          this.enqueueOutbox(txEm, balanceChangedEvent);
+        }
+
+        // Outbox: WagerTransactionProcessed (emitido para qualquer transação aplicada, inclusive LOSS)
+        const txProcessedEvent = new WagerTransactionProcessed({
           eventId: uuidv7(),
           aggregateId: wallet.id,
           correlationId: wagerTx.idempotencyKey,
           occurredAt: wagerTx.processedAt,
           data: {
-            walletId: wallet.id,
             transactionId: wagerTx.id,
-            direction,
+            providerId: wagerTx.providerId,
+            externalTransactionId: wagerTx.externalTransactionId,
+            walletId: wallet.id,
+            playerId: wallet.playerId,
+            roundId: wagerTx.roundId,
+            gameId: wagerTx.gameId,
+            kind: wagerTx.kind,
             money: inputMoney.toJSON(),
-            balanceBefore: balanceBefore.toJSON(),
-            balanceAfter: balanceAfter.toJSON(),
-            walletVersion: wallet.version,
+            referenceExternalTransactionId: wagerTx.referenceExternalTransactionId,
+            referenceTransactionId: wagerTx.referenceTransactionId,
+            balanceAfter: wallet.balance.toJSON(),
           },
         });
-        this.enqueueOutbox(txEm, balanceChangedEvent);
-      }
+        this.enqueueOutbox(txEm, txProcessedEvent);
 
-      // Outbox: WagerTransactionProcessed (emitido para qualquer transação aplicada, inclusive LOSS)
-      const txProcessedEvent = new WagerTransactionProcessed({
-        eventId: uuidv7(),
-        aggregateId: wallet.id,
-        correlationId: wagerTx.idempotencyKey,
-        occurredAt: wagerTx.processedAt,
-        data: {
+        await txEm.flush();
+
+        this.metricsService?.transactionsTotal.inc({
+          kind: command.kind,
+          status: WagerTransactionStatus.Processed,
+          provider_id: command.providerId,
+        });
+        this.observeDuration(command.kind, WagerTransactionStatus.Processed, startNs);
+
+        return {
           transactionId: wagerTx.id,
-          providerId: wagerTx.providerId,
-          externalTransactionId: wagerTx.externalTransactionId,
-          walletId: wallet.id,
-          playerId: wallet.playerId,
-          roundId: wagerTx.roundId,
-          gameId: wagerTx.gameId,
-          kind: wagerTx.kind,
-          money: inputMoney.toJSON(),
-          referenceExternalTransactionId: wagerTx.referenceExternalTransactionId,
-          referenceTransactionId: wagerTx.referenceTransactionId,
-          balanceAfter: wallet.balance.toJSON(),
-        },
+          status: wagerTx.status,
+          balance: wallet.balance.toJSON(),
+          idempotentReplay: false,
+        };
       });
-      this.enqueueOutbox(txEm, txProcessedEvent);
-
-      await txEm.flush();
-
-      return {
-        transactionId: wagerTx.id,
-        status: wagerTx.status,
-        balance: wallet.balance.toJSON(),
-        idempotentReplay: false,
-      };
-    });
+    } catch (error) {
+      if (this.isLockOrConcurrencyError(error)) {
+        this.metricsService?.lockConflictsTotal.inc();
+        this.observeDuration(command.kind, "LOCK_CONFLICT", startNs);
+      } else if (!(error instanceof IdempotencyConflictError)) {
+        this.observeDuration(command.kind, "ERROR", startNs);
+      }
+      throw error;
+    }
   }
 
   private async recordRejection(
@@ -550,7 +629,8 @@ export class ProcessWagerTransactionUseCase {
     wallet: Wallet,
     money: Money,
     failureCode: FailureCode,
-    observedBalance: Money
+    observedBalance: Money,
+    startNs: bigint
   ): Promise<ProcessWagerTransactionResult> {
     const transactionId = uuidv7();
     const wagerTx = WagerTransaction.create({
@@ -616,6 +696,13 @@ export class ProcessWagerTransactionUseCase {
 
     await txEm.flush();
 
+    this.metricsService?.transactionsTotal.inc({
+      kind: command.kind,
+      status: WagerTransactionStatus.Rejected,
+      provider_id: command.providerId,
+    });
+    this.observeDuration(command.kind, WagerTransactionStatus.Rejected, startNs);
+
     return {
       transactionId: wagerTx.id,
       status: wagerTx.status,
@@ -625,7 +712,27 @@ export class ProcessWagerTransactionUseCase {
     };
   }
 
-  private enqueueOutbox(txEm: EntityManager, event: any): void {
+  private observeDuration(kind: string, status: string, startNs: bigint): void {
+    const durationSeconds = Number(process.hrtime.bigint() - startNs) / 1_000_000_000;
+    this.metricsService?.transactionDurationSeconds.observe({ kind, status }, durationSeconds);
+  }
+
+  private isLockOrConcurrencyError(error: unknown): boolean {
+    if (typeof error !== "object" || error === null) return false;
+    const errObj = error as { code?: unknown; message?: unknown; cause?: { code?: unknown } };
+    const code = errObj.code ?? errObj.cause?.code;
+    if (code === "55P03" || code === "40P01" || code === "40001") {
+      return true;
+    }
+    const msg = typeof errObj.message === "string" ? errObj.message.toLowerCase() : "";
+    return (
+      msg.includes("lock_timeout") ||
+      msg.includes("could not obtain lock") ||
+      msg.includes("deadlock detected")
+    );
+  }
+
+  private enqueueOutbox(txEm: EntityManager, event: IntegrationEvent<unknown>): void {
     const outboxMsg = OutboxMessage.enqueue(event);
     const outboxOrm = txEm.create(OutboxMessageOrmEntity, {
       id: outboxMsg.id,

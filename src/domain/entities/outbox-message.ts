@@ -1,5 +1,5 @@
-import { IntegrationEvent } from "../events/integration-event";
 import { v7 as uuidv7 } from "uuid";
+import { IntegrationEvent } from "../events/integration-event";
 
 export interface OutboxMessageState {
   id: string;
@@ -21,7 +21,7 @@ export class OutboxMessage {
     public readonly occurredAt: Date,
     private _attempts: number,
     private _nextAttemptAt?: Date,
-    private _publishedAt?: Date,
+    private _publishedAt?: Date
   ) {}
 
   static enqueue(event: IntegrationEvent<unknown>): OutboxMessage {
@@ -35,7 +35,7 @@ export class OutboxMessage {
       Object.freeze(serialized),
       event.occurredAt,
       0,
-      now, // Due immediately
+      now // Due immediately
     );
   }
 
@@ -48,7 +48,7 @@ export class OutboxMessage {
       state.occurredAt,
       state.attempts,
       state.nextAttemptAt,
-      state.publishedAt,
+      state.publishedAt
     );
   }
 
@@ -83,7 +83,7 @@ export class OutboxMessage {
   scheduleRetry(now: Date = new Date()): void {
     this._attempts += 1;
     // Backoff exponencial: 1s, 2s, 4s, 8s, 16s... até teto de 60s
-    const delaySeconds = Math.min(Math.pow(2, this._attempts - 1), 60);
+    const delaySeconds = Math.min(2 ** (this._attempts - 1), 60);
     this._nextAttemptAt = new Date(now.getTime() + delaySeconds * 1000);
   }
 }

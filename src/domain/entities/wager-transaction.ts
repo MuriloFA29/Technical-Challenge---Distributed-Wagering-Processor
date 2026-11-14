@@ -1,12 +1,9 @@
-import {
-  InvalidTransactionStateError,
-  ReferenceRequirementError,
-} from "../errors/domain-errors";
-import { LedgerDirection } from "./wallet-ledger-entry";
+import { InvalidTransactionStateError, ReferenceRequirementError } from "../errors/domain-errors";
 import { Money } from "../value-objects/money";
+import { LedgerDirection } from "./wallet-ledger-entry";
 
 export enum WagerTransactionKind {
-  Opening = "OPENING",   // interno: crédito de abertura da wallet (não aceito externamente)
+  Opening = "OPENING", // interno: crédito de abertura da wallet (não aceito externamente)
   Bet = "BET",
   Win = "WIN",
   Loss = "LOSS",
@@ -15,11 +12,11 @@ export enum WagerTransactionKind {
 }
 
 export enum WagerTransactionStatus {
-  Pending = "PENDING",                      // aceita, ainda não aplicada
-  PendingReference = "PENDING_REFERENCE",    // aguardando a transação referenciada
-  Processed = "PROCESSED",                  // aplicada (terminal)
-  Rejected = "REJECTED",                    // violação de regra de negócio (terminal)
-  Failed = "FAILED",                        // erro permanente de infraestrutura (terminal)
+  Pending = "PENDING", // aceita, ainda não aplicada
+  PendingReference = "PENDING_REFERENCE", // aguardando a transação referenciada
+  Processed = "PROCESSED", // aplicada (terminal)
+  Rejected = "REJECTED", // violação de regra de negócio (terminal)
+  Failed = "FAILED", // erro permanente de infraestrutura (terminal)
 }
 
 export enum FailureCode {
@@ -93,13 +90,12 @@ export class WagerTransaction {
     private _referenceTransactionId?: string,
     private _failureCode?: FailureCode,
     private _observedBalance?: Money,
-    private _processedAt?: Date,
+    private _processedAt?: Date
   ) {}
 
   static create(props: CreateWagerTransactionProps): WagerTransaction {
     const isReferenceRequired =
-      props.kind === WagerTransactionKind.Refund ||
-      props.kind === WagerTransactionKind.Rollback;
+      props.kind === WagerTransactionKind.Refund || props.kind === WagerTransactionKind.Rollback;
 
     if (isReferenceRequired && !props.referenceExternalTransactionId) {
       throw new ReferenceRequirementError(props.kind);
@@ -119,7 +115,7 @@ export class WagerTransaction {
       props.money,
       props.referenceExternalTransactionId,
       props.createdAt ?? new Date(),
-      WagerTransactionStatus.Pending,
+      WagerTransactionStatus.Pending
     );
   }
 
@@ -142,7 +138,7 @@ export class WagerTransaction {
       state.referenceTransactionId,
       state.failureCode,
       state.observedBalance,
-      state.processedAt,
+      state.processedAt
     );
   }
 
@@ -213,10 +209,7 @@ export class WagerTransaction {
   }
 
   requiresReference(): boolean {
-    return (
-      this.kind === WagerTransactionKind.Refund ||
-      this.kind === WagerTransactionKind.Rollback
-    );
+    return this.kind === WagerTransactionKind.Refund || this.kind === WagerTransactionKind.Rollback;
   }
 
   matchesPayload(payloadHash: string): boolean {
@@ -232,14 +225,17 @@ export class WagerTransaction {
         return LedgerDirection.Debit;
       case WagerTransactionKind.Refund:
         return LedgerDirection.Credit;
-      case WagerTransactionKind.Rollback:
+      case WagerTransactionKind.Rollback: {
         if (!reference) {
-          throw new ReferenceRequirementError("ROLLBACK requires referenced transaction to calculate direction");
+          throw new ReferenceRequirementError(
+            "ROLLBACK requires referenced transaction to calculate direction"
+          );
         }
         const refDirection = reference.ledgerDirectionFor();
         return refDirection === LedgerDirection.Credit
           ? LedgerDirection.Debit
           : LedgerDirection.Credit;
+      }
       default:
         throw new Error(`Kind ${this.kind} does not generate ledger direction`);
     }

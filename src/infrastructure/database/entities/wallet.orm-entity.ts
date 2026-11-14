@@ -1,4 +1,4 @@
-import { Check, Entity, Index, PrimaryKey, Property, Unique } from "@mikro-orm/core";
+import { Check, Entity, PrimaryKey, Property, Unique } from "@mikro-orm/core";
 
 @Entity({ tableName: "wallets" })
 @Unique({ properties: ["playerId", "currency"], name: "uq_wallet_player_currency" })

@@ -1,8 +1,10 @@
-import { defineConfig } from "@mikro-orm/postgresql";
 import { Migrator } from "@mikro-orm/migrations";
+import { defineConfig } from "@mikro-orm/postgresql";
 
 export default defineConfig({
-  clientUrl: process.env.DATABASE_URL || "postgresql://wagering_user:wagering_password@localhost:5432/wagering_db",
+  clientUrl:
+    process.env.DATABASE_URL ||
+    "postgresql://wagering_user:wagering_password@localhost:5432/wagering_db",
   entities: ["./dist/infrastructure/database/entities", "./src/infrastructure/database/entities"],
   entitiesTs: ["./src/infrastructure/database/entities"],
   extensions: [Migrator],

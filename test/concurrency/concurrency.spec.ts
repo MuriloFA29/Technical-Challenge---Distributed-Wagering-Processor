@@ -1,5 +1,4 @@
 import { beforeEach, describe, expect, it } from "bun:test";
-import { InMemoryTestEntityManager } from "../helpers/mock-entity-manager";
 import { OpenWalletUseCase } from "../../src/application/use-cases/open-wallet.use-case";
 import { ProcessWagerTransactionUseCase } from "../../src/application/use-cases/process-wager-transaction.use-case";
 import { ReconcileWalletUseCase } from "../../src/application/use-cases/reconcile-wallet.use-case";
@@ -8,8 +7,8 @@ import {
   WagerTransactionKind,
   WagerTransactionStatus,
 } from "../../src/domain/entities/wager-transaction";
-import { Money } from "../../src/domain/value-objects/money";
 import { LedgerDirection } from "../../src/domain/entities/wallet-ledger-entry";
+import { InMemoryTestEntityManager } from "../helpers/mock-entity-manager";
 
 describe("Real Concurrency & Resilience Tests (Seção 13 do README)", () => {
   let em: InMemoryTestEntityManager;
@@ -133,25 +132,52 @@ describe("Real Concurrency & Resilience Tests (Seção 13 do README)", () => {
 
   // Cenário Obrigatório 3: Wallets distintas processadas em paralelo simultaneamente
   it("Cenário Wallets Distintas: Múltiplas carteiras processando em paralelo sem contenção", async () => {
-    const w1 = await openWalletUseCase.execute({ playerId: "p-dist-1", initialBalance: { amount: "100.00", currency: "BRL" } });
-    const w2 = await openWalletUseCase.execute({ playerId: "p-dist-2", initialBalance: { amount: "200.00", currency: "BRL" } });
-    const w3 = await openWalletUseCase.execute({ playerId: "p-dist-3", initialBalance: { amount: "300.00", currency: "BRL" } });
+    const w1 = await openWalletUseCase.execute({
+      playerId: "p-dist-1",
+      initialBalance: { amount: "100.00", currency: "BRL" },
+    });
+    const w2 = await openWalletUseCase.execute({
+      playerId: "p-dist-2",
+      initialBalance: { amount: "200.00", currency: "BRL" },
+    });
+    const w3 = await openWalletUseCase.execute({
+      playerId: "p-dist-3",
+      initialBalance: { amount: "300.00", currency: "BRL" },
+    });
 
     await Promise.all([
       processWagerUseCase.execute({
-        providerId: "prov-a", externalTransactionId: "tx-w1", idempotencyKey: "k-w1",
-        playerId: "p-dist-1", walletId: w1.id, roundId: "r-1", gameId: "g-1",
-        kind: WagerTransactionKind.Bet, money: { amount: "50.00", currency: "BRL" },
+        providerId: "prov-a",
+        externalTransactionId: "tx-w1",
+        idempotencyKey: "k-w1",
+        playerId: "p-dist-1",
+        walletId: w1.id,
+        roundId: "r-1",
+        gameId: "g-1",
+        kind: WagerTransactionKind.Bet,
+        money: { amount: "50.00", currency: "BRL" },
       }),
       processWagerUseCase.execute({
-        providerId: "prov-a", externalTransactionId: "tx-w2", idempotencyKey: "k-w2",
-        playerId: "p-dist-2", walletId: w2.id, roundId: "r-2", gameId: "g-1",
-        kind: WagerTransactionKind.Bet, money: { amount: "100.00", currency: "BRL" },
+        providerId: "prov-a",
+        externalTransactionId: "tx-w2",
+        idempotencyKey: "k-w2",
+        playerId: "p-dist-2",
+        walletId: w2.id,
+        roundId: "r-2",
+        gameId: "g-1",
+        kind: WagerTransactionKind.Bet,
+        money: { amount: "100.00", currency: "BRL" },
       }),
       processWagerUseCase.execute({
-        providerId: "prov-a", externalTransactionId: "tx-w3", idempotencyKey: "k-w3",
-        playerId: "p-dist-3", walletId: w3.id, roundId: "r-3", gameId: "g-1",
-        kind: WagerTransactionKind.Win, money: { amount: "150.00", currency: "BRL" },
+        providerId: "prov-a",
+        externalTransactionId: "tx-w3",
+        idempotencyKey: "k-w3",
+        playerId: "p-dist-3",
+        walletId: w3.id,
+        roundId: "r-3",
+        gameId: "g-1",
+        kind: WagerTransactionKind.Win,
+        money: { amount: "150.00", currency: "BRL" },
       }),
     ]);
 
@@ -231,21 +257,39 @@ describe("Real Concurrency & Resilience Tests (Seção 13 do README)", () => {
 
     // Sequência de operações mistas
     await processWagerUseCase.execute({
-      providerId: "prov-inv", externalTransactionId: "inv-b1", idempotencyKey: "k-inv-b1",
-      playerId: "p-inv-final", walletId: wallet.id, roundId: "r-1", gameId: "g-1",
-      kind: WagerTransactionKind.Bet, money: { amount: "50.00", currency: "BRL" },
+      providerId: "prov-inv",
+      externalTransactionId: "inv-b1",
+      idempotencyKey: "k-inv-b1",
+      playerId: "p-inv-final",
+      walletId: wallet.id,
+      roundId: "r-1",
+      gameId: "g-1",
+      kind: WagerTransactionKind.Bet,
+      money: { amount: "50.00", currency: "BRL" },
     });
 
     await processWagerUseCase.execute({
-      providerId: "prov-inv", externalTransactionId: "inv-w1", idempotencyKey: "k-inv-w1",
-      playerId: "p-inv-final", walletId: wallet.id, roundId: "r-1", gameId: "g-1",
-      kind: WagerTransactionKind.Win, money: { amount: "120.00", currency: "BRL" },
+      providerId: "prov-inv",
+      externalTransactionId: "inv-w1",
+      idempotencyKey: "k-inv-w1",
+      playerId: "p-inv-final",
+      walletId: wallet.id,
+      roundId: "r-1",
+      gameId: "g-1",
+      kind: WagerTransactionKind.Win,
+      money: { amount: "120.00", currency: "BRL" },
     });
 
     await processWagerUseCase.execute({
-      providerId: "prov-inv", externalTransactionId: "inv-l1", idempotencyKey: "k-inv-l1",
-      playerId: "p-inv-final", walletId: wallet.id, roundId: "r-1", gameId: "g-1",
-      kind: WagerTransactionKind.Loss, money: { amount: "0.00", currency: "BRL" },
+      providerId: "prov-inv",
+      externalTransactionId: "inv-l1",
+      idempotencyKey: "k-inv-l1",
+      playerId: "p-inv-final",
+      walletId: wallet.id,
+      roundId: "r-1",
+      gameId: "g-1",
+      kind: WagerTransactionKind.Loss,
+      money: { amount: "0.00", currency: "BRL" },
     });
 
     const rec = await reconcileWalletUseCase.execute(wallet.id);

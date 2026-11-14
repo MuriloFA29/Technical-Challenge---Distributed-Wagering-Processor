@@ -37,7 +37,7 @@ export class WalletLedgerEntry {
     public readonly money: Money,
     public readonly balanceBefore: Money,
     public readonly balanceAfter: Money,
-    public readonly createdAt: Date,
+    public readonly createdAt: Date
   ) {}
 
   static create(props: CreateLedgerEntryProps): WalletLedgerEntry {
@@ -49,7 +49,7 @@ export class WalletLedgerEntry {
       props.money,
       props.balanceBefore,
       props.balanceAfter,
-      props.createdAt ?? new Date(),
+      props.createdAt ?? new Date()
     );
 
     if (!entry.isBalanced()) {
@@ -70,7 +70,7 @@ export class WalletLedgerEntry {
       state.money,
       state.balanceBefore,
       state.balanceAfter,
-      state.createdAt,
+      state.createdAt
     );
   }
 

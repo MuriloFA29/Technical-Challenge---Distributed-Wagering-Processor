@@ -26,6 +26,20 @@ export class TransactionNotFoundError extends ApplicationError {
 
 export class IdempotencyConflictError extends ApplicationError {
   constructor(idempotencyKey: string) {
-    super(`Idempotency conflict for key "${idempotencyKey}": payload does not match original request`);
+    super(
+      `Idempotency conflict for key "${idempotencyKey}": payload does not match original request`
+    );
+  }
+}
+
+export class InvalidTransactionKindError extends ApplicationError {
+  constructor(kind: string) {
+    super(`${kind} transaction kind is internal and cannot be submitted via API or messaging.`);
+  }
+}
+
+export class InvalidCursorError extends ApplicationError {
+  constructor(message = "Invalid pagination cursor") {
+    super(message);
   }
 }

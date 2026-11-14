@@ -1,9 +1,19 @@
 import { Entity, Index, PrimaryKey, Property, Unique } from "@mikro-orm/core";
-import { WagerTransactionKind, WagerTransactionStatus, FailureCode } from "../../../domain/entities/wager-transaction";
+import {
+  FailureCode,
+  WagerTransactionKind,
+  WagerTransactionStatus,
+} from "../../../domain/entities/wager-transaction";
 
 @Entity({ tableName: "wager_transactions" })
-@Unique({ properties: ["providerId", "idempotencyKey"], name: "uq_transaction_provider_idempotency" })
-@Unique({ properties: ["providerId", "externalTransactionId"], name: "uq_transaction_provider_external_id" })
+@Unique({
+  properties: ["providerId", "idempotencyKey"],
+  name: "uq_transaction_provider_idempotency",
+})
+@Unique({
+  properties: ["providerId", "externalTransactionId"],
+  name: "uq_transaction_provider_external_id",
+})
 @Index({ properties: ["walletId"], name: "idx_transaction_wallet" })
 @Index({ properties: ["providerId", "roundId"], name: "idx_transaction_provider_round" })
 @Index({ properties: ["status"], name: "idx_transaction_status" })
@@ -32,7 +42,7 @@ export class WagerTransactionOrmEntity {
   @Property({ type: "varchar", length: 100 })
   roundId!: string;
 
-  @Property({ type: "gameId", length: 100 })
+  @Property({ type: "varchar", length: 100 })
   gameId!: string;
 
   @Property({ type: "varchar", length: 20 })

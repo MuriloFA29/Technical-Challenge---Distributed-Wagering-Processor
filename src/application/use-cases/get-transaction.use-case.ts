@@ -1,12 +1,12 @@
 import { EntityManager } from "@mikro-orm/postgresql";
-import { TransactionNotFoundError } from "../errors/application-errors";
-import { WagerTransactionOrmEntity } from "../../infrastructure/database/entities";
-import { MoneyProps } from "../../domain/value-objects/money";
 import {
   FailureCode,
   WagerTransactionKind,
   WagerTransactionStatus,
 } from "../../domain/entities/wager-transaction";
+import { MoneyProps } from "../../domain/value-objects/money";
+import { WagerTransactionOrmEntity } from "../../infrastructure/database/entities";
+import { TransactionNotFoundError } from "../errors/application-errors";
 
 export interface TransactionDetailsDto {
   id: string;

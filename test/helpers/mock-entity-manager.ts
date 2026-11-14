@@ -1,10 +1,10 @@
 import { LockMode } from "@mikro-orm/postgresql";
 import {
-  WalletOrmEntity,
-  WagerTransactionOrmEntity,
-  WalletLedgerEntryOrmEntity,
   InboxMessageOrmEntity,
   OutboxMessageOrmEntity,
+  WagerTransactionOrmEntity,
+  WalletLedgerEntryOrmEntity,
+  WalletOrmEntity,
 } from "../../src/infrastructure/database/entities";
 
 /**
@@ -62,7 +62,7 @@ export class InMemoryTestEntityManager {
   async transactional<T>(cb: (em: any) => Promise<T>): Promise<T> {
     const uncommittedPersists: any[] = [];
     const managedEntities: any[] = [];
-    let acquiredReleases: (() => void)[] = [];
+    const acquiredReleases: (() => void)[] = [];
 
     const txEm = {
       findOne: async (entityClass: any, filter: any, options?: { lockMode?: LockMode }) => {
@@ -99,7 +99,10 @@ export class InMemoryTestEntityManager {
           }
           if (filter.providerId && filter.idempotencyKey) {
             for (const tx of this.transactions.values()) {
-              if (tx.providerId === filter.providerId && tx.idempotencyKey === filter.idempotencyKey) {
+              if (
+                tx.providerId === filter.providerId &&
+                tx.idempotencyKey === filter.idempotencyKey
+              ) {
                 managedEntities.push(tx);
                 return tx;
               }
@@ -142,7 +145,7 @@ export class InMemoryTestEntityManager {
         return null;
       },
 
-      find: async (entityClass: any, filter: any, options?: any) => {
+      find: async (entityClass: any, filter: any, _options?: any) => {
         if (entityClass === WalletLedgerEntryOrmEntity) {
           const results: WalletLedgerEntryOrmEntity[] = [];
           for (const l of this.ledgerEntries.values()) {
